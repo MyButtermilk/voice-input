@@ -150,3 +150,16 @@ val THEME_KEY = SettingsKey(
 val BEAM_SEARCH = SettingsKey(key = booleanPreferencesKey("use_beam_search"), default = true)
 val MODELS_MIGRATED = SettingsKey(key = booleanPreferencesKey("models_migrated_1"), default = false)
 val DISMISS_MIGRATION_TIP = SettingsKey(key = booleanPreferencesKey("dismiss_migration_tip"), default = false)
+
+// Speech-to-text provider selection
+enum class SttProvider { LOCAL, SONIOX }
+
+val STT_PROVIDER = SettingsKey(
+    key = intPreferencesKey("stt_provider"),
+    default = SttProvider.LOCAL.ordinal
+)
+
+val SONIOX_API_KEY = SettingsKey(
+    key = stringPreferencesKey("soniox_api_key"),
+    default = ""
+)
