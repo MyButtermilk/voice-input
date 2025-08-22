@@ -77,6 +77,10 @@ There are four build flavors:
 
 Some prebuilt binaries are included in the `libs` directory to make the build faster, there are also instructions to build them yourself.
 
+## Soniox API integration
+
+In addition to the built-in Whisper models, this repository now contains optional clients for the [Soniox](https://soniox.com) speech-to-text service. `SonioxAsyncClient` shows how to upload audio and poll the asynchronous REST API, while `SonioxRealtimeClient` demonstrates streaming transcription over the real-time WebSocket API. The app's model settings let you switch between on-device recognition and Soniox, prompting for an API key when the online option is selected. These clients can be adapted for integrating remote transcription into the app.
+
 ## License
 
 This code is currently licensed under the [FUTO Source First License 1.0](LICENSE.md)

@@ -41,10 +41,18 @@ import org.futo.voiceinput.settings.Tip
 import org.futo.voiceinput.settings.USE_LANGUAGE_SPECIFIC_MODELS
 import org.futo.voiceinput.settings.getSettingBlocking
 import org.futo.voiceinput.settings.useDataStore
+import org.futo.voiceinput.settings.STT_PROVIDER
+import org.futo.voiceinput.settings.SONIOX_API_KEY
+import org.futo.voiceinput.settings.SttProvider
 import org.futo.voiceinput.startModelDownloadActivity
 
 @Composable
 fun modelsSubtitle(): String? {
+    val sttProvider = useDataStore(STT_PROVIDER)
+    if (SttProvider.values()[sttProvider.value] == SttProvider.SONIOX) {
+        return stringResource(R.string.stt_provider_soniox)
+    }
+
     val (languages, _) = useDataStore(LANGUAGE_TOGGLES)
     val (useLanguageSpecificModels, _) = useDataStore(USE_LANGUAGE_SPECIFIC_MODELS)
 
@@ -120,12 +128,18 @@ fun PersonalDictionaryEditor(disabled: Boolean) {
 
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 @Preview
 fun ModelsScreen(
     settingsViewModel: SettingsViewModel = viewModel(),
     navController: NavHostController = rememberNavController()
 ) {
+    val sttProvider = useDataStore(STT_PROVIDER)
+    val sonioxApiKey = useDataStore(SONIOX_API_KEY)
+
+    val provider = SttProvider.values()[sttProvider.value]
+
     val (useMultilingual, _) = useDataStore(ENABLE_MULTILINGUAL)
 
     val englishModelIndex = useDataStore(ENGLISH_MODEL_INDEX)
@@ -141,64 +155,90 @@ fun ModelsScreen(
     val dismissMigrationTip = useDataStore(setting = DISMISS_MIGRATION_TIP)
 
     val launchDownloaderIfNecessary = {
-        if (useMultilingual) {
-            context.startModelDownloadActivity(
-                listOf(
-                    ENGLISH_MODELS[englishModelIndex.value],
-                    MULTILINGUAL_MODELS[multilingualModelIndex.value]
+        if (provider == SttProvider.LOCAL) {
+            if (useMultilingual) {
+                context.startModelDownloadActivity(
+                    listOf(
+                        ENGLISH_MODELS[englishModelIndex.value],
+                        MULTILINGUAL_MODELS[multilingualModelIndex.value]
+                    )
                 )
-            )
-        } else {
-            context.startModelDownloadActivity(listOf(ENGLISH_MODELS[englishModelIndex.value]))
+            } else {
+                context.startModelDownloadActivity(listOf(ENGLISH_MODELS[englishModelIndex.value]))
+            }
         }
     }
 
-    LaunchedEffect(listOf(useMultilingual, englishModelIndex.value, multilingualModelIndex.value)) {
+    LaunchedEffect(listOf(provider, useMultilingual, englishModelIndex.value, multilingualModelIndex.value)) {
         launchDownloaderIfNecessary()
     }
-
 
     ScrollableList {
         ScreenTitle(stringResource(R.string.model_options), showBack = true, navController = navController)
 
-        ConditionalModelUpdate()
+        SettingRadio(
+            stringResource(R.string.stt_provider),
+            SttProvider.values().indices.toList(),
+            listOf(
+                stringResource(R.string.stt_provider_local),
+                stringResource(R.string.stt_provider_soniox)
+            ),
+            STT_PROVIDER
+        )
 
-        if(wasMigrated.value && !dismissMigrationTip.value) {
-            Tip(stringResource(R.string.new_model_features_tip), onDismiss = { dismissMigrationTip.setValue(true) })
+        when(provider) {
+            SttProvider.SONIOX -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextField(
+                    value = sonioxApiKey.value,
+                    onValueChange = { sonioxApiKey.setValue(it) },
+                    label = { Text(stringResource(R.string.soniox_api_key)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp, 4.dp)
+                )
+            }
+            SttProvider.LOCAL -> {
+                ConditionalModelUpdate()
+
+                if(wasMigrated.value && !dismissMigrationTip.value) {
+                    Tip(stringResource(R.string.new_model_features_tip), onDismiss = { dismissMigrationTip.setValue(true) })
+                }
+
+                if(languages.size > 1) {
+                    SettingToggleDataStore(
+                        stringResource(R.string.manually_select_language),
+                        MANUALLY_SELECT_LANGUAGE,
+                        subtitle = stringResource(R.string.manual_language_selection_toggle_subtitle)
+                    )
+                }
+
+                if(!needsUpdate) {
+                    PersonalDictionaryEditor(disabled = false)
+
+                    Spacer(modifier = Modifier.height(32.dp))
+                }
+
+                if (useMultilingual) {
+                    SettingRadio(
+                        stringResource(R.string.multilingual_model),
+                        MULTILINGUAL_MODELS.indices.toList(),
+                        MULTILINGUAL_MODELS.map { it.name },
+                        MULTILINGUAL_MODEL_INDEX
+                    )
+                }
+
+                if((!useMultilingual) || (languages.contains("en") && useLanguageSpecificModels)) {
+                    SettingRadio(
+                        stringResource(R.string.english_model),
+                        ENGLISH_MODELS.indices.toList(),
+                        ENGLISH_MODELS.map { it.name },
+                        ENGLISH_MODEL_INDEX
+                    )
+                }
+
+                Tip(stringResource(R.string.parameter_count_tip))
+            }
         }
-
-        if(languages.size > 1) {
-            SettingToggleDataStore(
-                stringResource(R.string.manually_select_language),
-                MANUALLY_SELECT_LANGUAGE,
-                subtitle = stringResource(R.string.manual_language_selection_toggle_subtitle)
-            )
-        }
-
-        if(!needsUpdate) {
-            PersonalDictionaryEditor(disabled = false)
-
-            Spacer(modifier = Modifier.height(32.dp))
-        }
-
-        if (useMultilingual) {
-            SettingRadio(
-                stringResource(R.string.multilingual_model),
-                MULTILINGUAL_MODELS.indices.toList(),
-                MULTILINGUAL_MODELS.map { it.name },
-                MULTILINGUAL_MODEL_INDEX
-            )
-        }
-
-        if((!useMultilingual) || (languages.contains("en") && useLanguageSpecificModels)) {
-            SettingRadio(
-                stringResource(R.string.english_model),
-                ENGLISH_MODELS.indices.toList(),
-                ENGLISH_MODELS.map { it.name },
-                ENGLISH_MODEL_INDEX
-            )
-        }
-
-        Tip(stringResource(R.string.parameter_count_tip))
     }
 }

@@ -214,4 +214,9 @@
     <string name="commitment_to_privacy_title">Commitment to Privacy</string>
     <string name="commitment_to_privacy_body">This app will never serve you ads or sell your data. We are not in the business of doing that.</string>
 
+    <string name="stt_provider">Transcription engine</string>
+    <string name="stt_provider_local">On-device (offline)</string>
+    <string name="stt_provider_soniox">Soniox (online)</string>
+    <string name="soniox_api_key">Soniox API key</string>
+
 </resources>
