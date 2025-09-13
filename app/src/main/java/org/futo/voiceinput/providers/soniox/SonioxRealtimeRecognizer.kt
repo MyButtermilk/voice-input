@@ -174,7 +174,14 @@ class SonioxRealtimeRecognizer(
         lifecycleScope.launch(Dispatchers.Main) { ui.onRecordingStarted() }
 
         recorderJob = lifecycleScope.launch(Dispatchers.Default) {
-            val vad = Vad.builder().setModel(Model.WEB_RTC_GMM).setMode(Mode.VERY_AGGRESSIVE).setFrameSize(FrameSize.FRAME_SIZE_480).setSampleRate(SampleRate.SAMPLE_RATE_16K).setSpeechDurationMs(150).setSilenceDurationMs(300).build()
+            val speechMs = context.getSettingBlocking(org.futo.voiceinput.settings.VAD_SPEECH_MS.key, org.futo.voiceinput.settings.VAD_SPEECH_MS.default)
+            val silenceMs = context.getSettingBlocking(org.futo.voiceinput.settings.VAD_SILENCE_MS.key, org.futo.voiceinput.settings.VAD_SILENCE_MS.default)
+            val endSoonMs = context.getSettingBlocking(org.futo.voiceinput.settings.VAD_END_SOON_MS.key, org.futo.voiceinput.settings.VAD_END_SOON_MS.default)
+            val finalizeMs = context.getSettingBlocking(org.futo.voiceinput.settings.VAD_FINALIZE_MS.key, org.futo.voiceinput.settings.VAD_FINALIZE_MS.default)
+            fun msToFrames(ms: Int): Int = (ms + 29) / 30
+            val endSoonFrames = msToFrames(endSoonMs)
+            val finalizeFrames = msToFrames(finalizeMs)
+            val vad = Vad.builder().setModel(Model.WEB_RTC_GMM).setMode(Mode.VERY_AGGRESSIVE).setFrameSize(FrameSize.FRAME_SIZE_480).setSampleRate(SampleRate.SAMPLE_RATE_16K).setSpeechDurationMs(speechMs).setSilenceDurationMs(silenceMs).build()
             val vadSampleBuffer = java.nio.ShortBuffer.allocate(480)
             var numConsecutiveNonSpeech = 0
             var numConsecutiveSpeech = 0
@@ -202,7 +209,7 @@ class SonioxRealtimeRecognizer(
                 if (rms > 0.0001f) anyNoiseAtAll = true
                 if ((rms > 0.01) || (numConsecutiveSpeech > 8)) hasTalked = true
                 val magnitude = (1.0f - 0.1f.pow(24.0f * rms))
-                val state = if (hasTalked && (numConsecutiveNonSpeech > 33)) MagnitudeState.ENDING_SOON_VAD else if (hasTalked) MagnitudeState.TALKING else if (!anyNoiseAtAll) MagnitudeState.MIC_MAY_BE_BLOCKED else MagnitudeState.NOT_TALKED_YET
+                val state = if (hasTalked && (numConsecutiveNonSpeech > endSoonFrames)) MagnitudeState.ENDING_SOON_VAD else if (hasTalked) MagnitudeState.TALKING else if (!anyNoiseAtAll) MagnitudeState.MIC_MAY_BE_BLOCKED else MagnitudeState.NOT_TALKED_YET
                 withContext(Dispatchers.Main) { ui.onUpdateMagnitude(magnitude, state) }
 
                 // Send audio to WS as little-endian PCM16
@@ -212,7 +219,7 @@ class SonioxRealtimeRecognizer(
                 webSocket?.send(ByteString.of(*bytes))
 
                 // Auto-finalize with VAD when silent long enough
-                if (hasTalked && (numConsecutiveNonSpeech > 66)) {
+                if (hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
                     withContext(Dispatchers.Main) { finish() }
                     break
                 }

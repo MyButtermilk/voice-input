@@ -223,4 +223,8 @@
     <string name="soniox_mode_label">Soniox Mode</string>
     <string name="provider_soniox_async">Async (Upload &amp; Transcribe)</string>
     <string name="provider_soniox_realtime">Realtime (Streaming)</string>
+    <string name="vad_speech_ms_label">VAD speech duration (ms)</string>
+    <string name="vad_silence_ms_label">VAD silence duration (ms)</string>
+    <string name="vad_end_soon_ms_label">VAD ending-soon after (ms)</string>
+    <string name="vad_finalize_ms_label">VAD finalize after silence (ms)</string>
 </resources>

@@ -40,6 +40,10 @@ import org.futo.voiceinput.settings.MULTILINGUAL_MODEL_INDEX
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.USE_LANGUAGE_SPECIFIC_MODELS
 import org.futo.voiceinput.settings.getSetting
+import org.futo.voiceinput.settings.VAD_SPEECH_MS
+import org.futo.voiceinput.settings.VAD_SILENCE_MS
+import org.futo.voiceinput.settings.VAD_END_SOON_MS
+import org.futo.voiceinput.settings.VAD_FINALIZE_MS
 import java.io.IOException
 import java.nio.FloatBuffer
 import java.nio.ShortBuffer
@@ -355,13 +359,21 @@ abstract class AudioRecognizer {
                     var anyNoiseAtAll = false
                     var isMicBlocked = false
 
+                    val speechMs = context.getSetting(VAD_SPEECH_MS)
+                    val silenceMs = context.getSetting(VAD_SILENCE_MS)
+                    val endSoonMs = context.getSetting(VAD_END_SOON_MS)
+                    val finalizeMs = context.getSetting(VAD_FINALIZE_MS)
+                    fun msToFrames(ms: Int): Int = (ms + 29) / 30
+                    val endSoonFrames = msToFrames(endSoonMs)
+                    val finalizeFrames = msToFrames(finalizeMs)
+
                     val vad = Vad.builder()
                         .setModel(Model.WEB_RTC_GMM)
                         .setMode(Mode.VERY_AGGRESSIVE)
                         .setFrameSize(FrameSize.FRAME_SIZE_480)
                         .setSampleRate(SampleRate.SAMPLE_RATE_16K)
-                        .setSpeechDurationMs(150)
-                        .setSilenceDurationMs(300)
+                        .setSpeechDurationMs(speechMs)
+                        .setSilenceDurationMs(silenceMs)
                         .build()
 
                     val shouldUseVad = context.getSetting(IS_VAD_ENABLED)
@@ -441,7 +453,7 @@ abstract class AudioRecognizer {
                         }
 
                         // End if VAD hasn't detected speech in a while
-                        if(shouldUseVad && hasTalked && (numConsecutiveNonSpeech > 66)) {
+                        if(shouldUseVad && hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
                             withContext(Dispatchers.Main){ finishRecognizer() }
                             break
                         }
@@ -450,7 +462,7 @@ abstract class AudioRecognizer {
 
                         val state = if (!canExpandSpace && floatSamples.remaining() < (16000 * 5)) {
                             MagnitudeState.ENDING_SOON_30S
-                        } else if(hasTalked && shouldUseVad && (numConsecutiveNonSpeech > 33)) {
+                        } else if(hasTalked && shouldUseVad && (numConsecutiveNonSpeech > endSoonFrames)) {
                             MagnitudeState.ENDING_SOON_VAD
                         } else if(hasTalked) {
                             MagnitudeState.TALKING

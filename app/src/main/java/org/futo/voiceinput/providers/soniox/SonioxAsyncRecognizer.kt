@@ -31,6 +31,10 @@ import org.futo.voiceinput.settings.LANGUAGE_TOGGLES
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.SONIOX_API_KEY
 import org.futo.voiceinput.settings.getSetting
+import org.futo.voiceinput.settings.VAD_SPEECH_MS
+import org.futo.voiceinput.settings.VAD_SILENCE_MS
+import org.futo.voiceinput.settings.VAD_END_SOON_MS
+import org.futo.voiceinput.settings.VAD_FINALIZE_MS
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.FloatBuffer
@@ -187,13 +191,21 @@ class SonioxAsyncRecognizer(
                 var anyNoiseAtAll = false
                 var isMicBlocked = false
 
+                val speechMs = context.getSetting(VAD_SPEECH_MS)
+                val silenceMs = context.getSetting(VAD_SILENCE_MS)
+                val endSoonMs = context.getSetting(VAD_END_SOON_MS)
+                val finalizeMs = context.getSetting(VAD_FINALIZE_MS)
+                fun msToFrames(ms: Int): Int = (ms + 29) / 30
+                val endSoonFrames = msToFrames(endSoonMs)
+                val finalizeFrames = msToFrames(finalizeMs)
+
                 val vad = Vad.builder()
                     .setModel(Model.WEB_RTC_GMM)
                     .setMode(Mode.VERY_AGGRESSIVE)
                     .setFrameSize(FrameSize.FRAME_SIZE_480)
                     .setSampleRate(SampleRate.SAMPLE_RATE_16K)
-                    .setSpeechDurationMs(150)
-                    .setSilenceDurationMs(300)
+                    .setSpeechDurationMs(speechMs)
+                    .setSilenceDurationMs(silenceMs)
                     .build()
 
                 val shouldUseVad = context.getSetting(IS_VAD_ENABLED)
@@ -249,7 +261,7 @@ class SonioxAsyncRecognizer(
                     if (startSoundPassed && ((rms > 0.01) || (numConsecutiveSpeech > 8))) hasTalked = true
 
                     val magnitude = (1.0f - 0.1f.pow(24.0f * rms))
-                    val state = if (hasTalked && shouldUseVad && (numConsecutiveNonSpeech > 33)) {
+                    val state = if (hasTalked && shouldUseVad && (numConsecutiveNonSpeech > endSoonFrames)) {
                         MagnitudeState.ENDING_SOON_VAD
                     } else if (hasTalked) {
                         MagnitudeState.TALKING
@@ -261,7 +273,7 @@ class SonioxAsyncRecognizer(
                     withContext(Dispatchers.Main) { ui.onUpdateMagnitude(magnitude, state) }
 
                     // Auto-finalize with VAD when silent long enough
-                    if (shouldUseVad && hasTalked && (numConsecutiveNonSpeech > 66)) {
+                    if (shouldUseVad && hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
                         withContext(Dispatchers.Main) { finish() }
                         break
                     }
