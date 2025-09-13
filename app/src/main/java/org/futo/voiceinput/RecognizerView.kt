@@ -55,6 +55,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.math.MathUtils.clamp
 import androidx.lifecycle.LifecycleCoroutineScope
+import org.futo.voiceinput.recognizer.RecognizerControl
+import org.futo.voiceinput.recognizer.RecognizerUiCallbacks
+import org.futo.voiceinput.settings.STT_PROVIDER
+import org.futo.voiceinput.settings.SONIOX_MODE
 import com.google.android.material.math.MathUtils
 import kotlinx.coroutines.launch
 import org.futo.voiceinput.ml.RunState
@@ -293,11 +297,15 @@ abstract class RecognizerView {
     @Composable
     abstract fun Window(onClose: () -> Unit, allowClick: Boolean, onPauseVAD: (Boolean) -> Unit, onFinish: () -> Unit, content: @Composable ColumnScope.() -> Unit)
 
-    private val recognizer = object : AudioRecognizer() {
-        override val context: Context
-            get() = this@RecognizerView.context
-        override val lifecycleScope: LifecycleCoroutineScope
-            get() = this@RecognizerView.lifecycleScope
+    private var sttProvider: String = "whisper_local"
+    private lateinit var recognizer: RecognizerControl
+
+    private fun buildLocalRecognizer(): RecognizerControl {
+        return object : AudioRecognizer(), RecognizerControl {
+            override val context: Context
+                get() = this@RecognizerView.context
+            override val lifecycleScope: LifecycleCoroutineScope
+                get() = this@RecognizerView.lifecycleScope
 
         // Tries to play a sound. If it's not yet ready, plays it when it's ready
         private fun playSound(id: Int) {
@@ -446,7 +454,7 @@ abstract class RecognizerView {
             }
         }
 
-        override fun processing() {
+            override fun processing() {
             setContent {
                 this@RecognizerView.Window(
                     onClose = { cancelRecognizer() },
@@ -458,18 +466,127 @@ abstract class RecognizerView {
                 }
             }
         }
+        }
+    }
+
+    private fun buildSonioxRecognizer(): RecognizerControl {
+        val ui = object : RecognizerUiCallbacks {
+            override fun onCancelled() { onCancel() }
+            override fun onFinished(result: String) { sendResult(result) }
+            override fun onLanguageDetected(result: String) {}
+            override fun onPartialResult(result: String) { if (shouldBeVerbose) sendPartialResult(result) }
+            override fun onDecodingStatus(status: RunState) {
+                val text = if (shouldBeVerbose) context.getString(R.string.processing) else context.getString(R.string.processing)
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = text) }
+                }
+            }
+            override fun onLoading() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = context.getString(R.string.initializing)) }
+                }
+            }
+            override fun onNeedPermission() { requestPermission() }
+            override fun onPermissionRejected() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = true
+                    ) { RecognizeMicError(openSettings = { }) }
+                }
+            }
+            override fun onRecordingStarted() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
+                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET) }
+                }
+            }
+            override fun onUpdateMagnitude(magnitude: Float, state: MagnitudeState) {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
+                    ) { InnerRecognize(magnitude = magnitude, state = state) }
+                }
+            }
+            override fun onProcessing() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = stringResource(R.string.processing)) }
+                }
+            }
+        }
+        return org.futo.voiceinput.providers.soniox.SonioxAsyncRecognizer(context, lifecycleScope, ui)
+    }
+
+    private fun buildSonioxRealtimeRecognizer(): RecognizerControl {
+        val ui = object : RecognizerUiCallbacks {
+            override fun onCancelled() { onCancel() }
+            override fun onFinished(result: String) { sendResult(result) }
+            override fun onLanguageDetected(result: String) {}
+            override fun onPartialResult(result: String) { if (shouldBeVerbose) sendPartialResult(result) }
+            override fun onDecodingStatus(status: RunState) {
+                val text = context.getString(R.string.processing)
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = text) }
+                }
+            }
+            override fun onLoading() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = context.getString(R.string.initializing)) }
+                }
+            }
+            override fun onNeedPermission() { requestPermission() }
+            override fun onPermissionRejected() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = true
+                    ) { RecognizeMicError(openSettings = { }) }
+                }
+            }
+            override fun onRecordingStarted() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
+                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET) }
+                }
+            }
+            override fun onUpdateMagnitude(magnitude: Float, state: MagnitudeState) {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
+                    ) { InnerRecognize(magnitude = magnitude, state = state) }
+                }
+            }
+            override fun onProcessing() {
+                setContent {
+                    this@RecognizerView.Window(
+                        onClose = { recognizer.cancelRecognizer() }, onFinish = { }, onPauseVAD = { }, allowClick = false
+                    ) { RecognizeLoadingCircle(text = stringResource(R.string.processing)) }
+                }
+            }
+        }
+        return org.futo.voiceinput.providers.soniox.SonioxRealtimeRecognizer(context, lifecycleScope, ui)
     }
 
     fun isRecording(): Boolean {
-        return recognizer.isCurrentlyRecording()
+        return if (::recognizer.isInitialized) recognizer.isCurrentlyRecording() else false
     }
 
     fun finishRecognizerIfRecording() {
-        recognizer.finishRecognizerIfRecording()
+        if (::recognizer.isInitialized) recognizer.finishRecognizerIfRecording()
     }
 
     fun reset() {
-        recognizer.reset()
+        if (::recognizer.isInitialized) recognizer.reset()
     }
 
     fun init() {
@@ -478,6 +595,11 @@ abstract class RecognizerView {
 
         lifecycleScope.launch {
             loadSettings()
+            sttProvider = context.getSetting(STT_PROVIDER)
+            recognizer = if (sttProvider == "soniox_cloud") {
+                val mode = context.getSetting(SONIOX_MODE)
+                if (mode == "realtime") buildSonioxRealtimeRecognizer() else buildSonioxRecognizer()
+            } else buildLocalRecognizer()
 
             if(shouldRequestLanguage && (languages.size > 1)) {
                 setContent {
@@ -508,10 +630,10 @@ abstract class RecognizerView {
     }
 
     fun permissionResultGranted() {
-        recognizer.permissionResultGranted()
+        if (::recognizer.isInitialized) recognizer.permissionResultGranted()
     }
 
     fun permissionResultRejected() {
-        recognizer.permissionResultRejected()
+        if (::recognizer.isInitialized) recognizer.permissionResultRejected()
     }
 }

@@ -214,4 +214,13 @@
     <string name="commitment_to_privacy_title">Commitment to Privacy</string>
     <string name="commitment_to_privacy_body">This app will never serve you ads or sell your data. We are not in the business of doing that.</string>
 
+    <string name="stt_provider">Speech-to-Text</string>
+    <string name="stt_provider_label">Speech-to-Text Provider</string>
+    <string name="provider_whisper_local">Local (Whisper)</string>
+    <string name="provider_soniox_cloud">Soniox (Cloud)</string>
+    <string name="soniox_api_key_label">Soniox API key</string>
+    <string name="soniox_api_key_placeholder">Paste your Soniox API key</string>
+    <string name="soniox_mode_label">Soniox Mode</string>
+    <string name="provider_soniox_async">Async (Upload &amp; Transcribe)</string>
+    <string name="provider_soniox_realtime">Realtime (Streaming)</string>
 </resources>
