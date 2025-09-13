@@ -233,7 +233,15 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         }
 
         override fun sendResult(result: String) {
-            this@VoiceInputMethodService.currentInputConnection.also {
+            val ic = this@VoiceInputMethodService.currentInputConnection
+            if (ic == null) {
+                // Defer commit until we regain an input connection
+                pendingCommitText.value = result
+                onCancel()
+                return
+            }
+
+            ic.also {
                 var modifiedResult = result
 
                 // Insert space automatically if ended at punctuation
@@ -258,17 +266,23 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
                 }
                 */
 
+                it.beginBatchEdit()
+                // Ensure composing text is finalized before committing final text
+                it.finishComposingText()
                 it.commitText(modifiedResult, 1)
+                it.endBatchEdit()
             }
             onCancel()
         }
 
         override fun sendPartialResult(result: String): Boolean {
-            if(this@VoiceInputMethodService.currentInputConnection != null) {
-                this@VoiceInputMethodService.currentInputConnection.setComposingText(result, 1)
-                return true
+            val ic = this@VoiceInputMethodService.currentInputConnection
+            return if (ic != null) {
+                ic.setComposingText(result, 1)
+                true
             } else {
-                return false
+                // Defer only final results; partials are best-effort
+                false
             }
         }
 
@@ -333,6 +347,7 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
     private var needsInitialization = true
+    private val pendingCommitText: MutableState<String?> = mutableStateOf(null)
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
 
@@ -362,6 +377,18 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         } else {
             println("Continuing recording, likely due to landscape/portrait switch")
             recognizer.refreshContent()
+        }
+
+        // If any final text was pending because there was no input connection when recognition
+        // finished, commit it now.
+        pendingCommitText.value?.let { text ->
+            currentInputConnection?.let { ic ->
+                ic.beginBatchEdit()
+                ic.finishComposingText()
+                ic.commitText(text, 1)
+                ic.endBatchEdit()
+                pendingCommitText.value = null
+            }
         }
         // TODO: Idle state
     }
