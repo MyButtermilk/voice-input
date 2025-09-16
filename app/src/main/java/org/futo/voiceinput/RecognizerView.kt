@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -136,7 +137,8 @@ fun AnimatedRecognizeCircle(magnitude: Float = 0.5f) {
 @Composable
 fun InnerRecognize(
     magnitude: Float = 0.5f,
-    state: MagnitudeState = MagnitudeState.MIC_MAY_BE_BLOCKED
+    state: MagnitudeState = MagnitudeState.MIC_MAY_BE_BLOCKED,
+    onStop: (() -> Unit)? = null
 ) {
     val shouldUseCircle = useDataStoreValueNullable(ENABLE_ANIMATIONS.key, default = ENABLE_ANIMATIONS.default)
 
@@ -154,6 +156,7 @@ fun InnerRecognize(
             contentDescription = stringResource(R.string.stop_recording),
             modifier = Modifier
                 .size(48.dp)
+                .clickable(enabled = onStop != null) { onStop?.invoke() }
                 .align(Alignment.Center),
             tint = MaterialTheme.colorScheme.onPrimaryContainer
         )
@@ -448,7 +451,8 @@ abstract class RecognizerView {
                 ) {
                     InnerRecognize(
                         magnitude = magnitude,
-                        state = state
+                        state = state,
+                        onStop = { finishRecognizerIfRecording() }
                     )
                 }
             }
@@ -474,7 +478,20 @@ abstract class RecognizerView {
             override fun onCancelled() { onCancel() }
             override fun onFinished(result: String) { sendResult(result) }
             override fun onLanguageDetected(result: String) {}
-            override fun onPartialResult(result: String) { if (shouldBeVerbose) sendPartialResult(result) }
+            override fun onPartialResult(result: String) {
+                if (!sendPartialResult(result)) {
+                    if (shouldBeVerbose && result.isNotBlank()) {
+                        setContent {
+                            this@RecognizerView.Window(
+                                onClose = { recognizer.cancelRecognizer() },
+                                onFinish = { finishRecognizerIfRecording() },
+                                onPauseVAD = { v -> recognizer.pauseVAD(v) },
+                                allowClick = false
+                            ) { PartialDecodingResult(text = result) }
+                        }
+                    }
+                }
+            }
             override fun onDecodingStatus(status: RunState) {
                 val text = if (shouldBeVerbose) context.getString(R.string.processing) else context.getString(R.string.processing)
                 setContent {
@@ -502,14 +519,14 @@ abstract class RecognizerView {
                 setContent {
                     this@RecognizerView.Window(
                         onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
-                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET) }
+                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET, onStop = { finishRecognizerIfRecording() }) }
                 }
             }
             override fun onUpdateMagnitude(magnitude: Float, state: MagnitudeState) {
                 setContent {
                     this@RecognizerView.Window(
                         onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
-                    ) { InnerRecognize(magnitude = magnitude, state = state) }
+                    ) { InnerRecognize(magnitude = magnitude, state = state, onStop = { finishRecognizerIfRecording() }) }
                 }
             }
             override fun onProcessing() {
@@ -528,7 +545,22 @@ abstract class RecognizerView {
             override fun onCancelled() { onCancel() }
             override fun onFinished(result: String) { sendResult(result) }
             override fun onLanguageDetected(result: String) {}
-            override fun onPartialResult(result: String) { if (shouldBeVerbose) sendPartialResult(result) }
+            override fun onPartialResult(result: String) {
+                // Stream directly into the target field via IME composing text.
+                // If we have no input connection (returns false), fall back to overlay.
+                if (!sendPartialResult(result)) {
+                    if (shouldBeVerbose && result.isNotBlank()) {
+                        setContent {
+                            this@RecognizerView.Window(
+                                onClose = { recognizer.cancelRecognizer() },
+                                onFinish = { finishRecognizerIfRecording() },
+                                onPauseVAD = { v -> recognizer.pauseVAD(v) },
+                                allowClick = false
+                            ) { PartialDecodingResult(text = result) }
+                        }
+                    }
+                }
+            }
             override fun onDecodingStatus(status: RunState) {
                 val text = context.getString(R.string.processing)
                 setContent {
@@ -556,14 +588,14 @@ abstract class RecognizerView {
                 setContent {
                     this@RecognizerView.Window(
                         onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
-                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET) }
+                    ) { InnerRecognize(magnitude = 0.0f, state = MagnitudeState.NOT_TALKED_YET, onStop = { finishRecognizerIfRecording() }) }
                 }
             }
             override fun onUpdateMagnitude(magnitude: Float, state: MagnitudeState) {
                 setContent {
                     this@RecognizerView.Window(
                         onClose = { recognizer.cancelRecognizer() }, onFinish = { finishRecognizerIfRecording() }, onPauseVAD = { v -> recognizer.pauseVAD(v) }, allowClick = true
-                    ) { InnerRecognize(magnitude = magnitude, state = state) }
+                    ) { InnerRecognize(magnitude = magnitude, state = state, onStop = { finishRecognizerIfRecording() }) }
                 }
             }
             override fun onProcessing() {
@@ -596,12 +628,14 @@ abstract class RecognizerView {
         lifecycleScope.launch {
             loadSettings()
             sttProvider = context.getSetting(STT_PROVIDER)
+            val mode = if (sttProvider == "soniox_cloud") context.getSetting(SONIOX_MODE) else ""
             recognizer = if (sttProvider == "soniox_cloud") {
-                val mode = context.getSetting(SONIOX_MODE)
                 if (mode == "realtime") buildSonioxRealtimeRecognizer() else buildSonioxRecognizer()
             } else buildLocalRecognizer()
 
-            if(shouldRequestLanguage && (languages.size > 1)) {
+            val isRealtimeSoniox = (sttProvider == "soniox_cloud" && mode == "realtime")
+
+            if(shouldRequestLanguage && (languages.size > 1) && !isRealtimeSoniox) {
                 setContent {
                     this@RecognizerView.Window(
                         onClose = { recognizer.cancelRecognizer() },
@@ -623,6 +657,7 @@ abstract class RecognizerView {
                     }
                 }
             } else {
+                // For realtime Soniox, skip any overlay and start immediately
                 recognizer.forceLanguage(null)
                 recognizer.create()
             }

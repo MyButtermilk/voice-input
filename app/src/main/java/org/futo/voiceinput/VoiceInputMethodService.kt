@@ -8,6 +8,7 @@ import android.text.InputType
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.InputMethodSubtype
 import androidx.compose.foundation.layout.Box
@@ -65,6 +66,9 @@ import org.futo.voiceinput.migration.scheduleModelMigrationJob
 import org.futo.voiceinput.settings.pages.ConditionalUnpaidNoticeInVoiceInputWindow
 import org.futo.voiceinput.theme.UixThemeAuto
 import org.futo.voiceinput.updates.scheduleUpdateCheckingJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 val SupportsNavbarExtension = Build.VERSION.SDK_INT >= 28
 
@@ -214,6 +218,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         }
 
         override fun onCancel() {
+            deferredCommitJob?.cancel()
+            deferredCommitJob = null
+            pendingCommitText.value = null
             needsInitialization = true
             reset()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -226,59 +233,52 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         var prevText: CharSequence? = null
         var nextText: CharSequence? = null
         override fun decodingStarted() {
-            this@VoiceInputMethodService.currentInputConnection.also {
-                prevText = it.getTextBeforeCursor(1, 0)
-                nextText = it.getTextAfterCursor(1, 0)
+            this@VoiceInputMethodService.currentInputConnection?.let { connection ->
+                prevText = connection.getTextBeforeCursor(1, 0)
+                nextText = connection.getTextAfterCursor(1, 0)
+                lastInputConnection = connection
             }
         }
 
         override fun sendResult(result: String) {
-            val ic = this@VoiceInputMethodService.currentInputConnection
-            if (ic == null) {
-                // Defer commit until we regain an input connection
-                pendingCommitText.value = result
+            val computedResult = if (result.isNotEmpty() && !prevText.isNullOrBlank() && punctuationChars.contains(prevText?.last())) {
+                " $result"
+            } else {
+                result
+            }
+
+            val connection = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
+
+            if (computedResult.isEmpty()) {
+                connection?.let { commitToConnection(it, computedResult) }
+                pendingCommitText.value = null
+                deferredCommitJob?.cancel()
+                deferredCommitJob = null
                 onCancel()
                 return
             }
 
-            ic.also {
-                var modifiedResult = result
-
-                // Insert space automatically if ended at punctuation
-                // TODO: Could send text before cursor as whisper prompt
-
-                if(!prevText.isNullOrBlank()) {
-                    val lastChar = prevText?.last()
-
-                    if (punctuationChars.contains(lastChar)) {
-                        modifiedResult = " $result"
-                    }
-                }
-
-                /*
-                if(!nextText.isNullOrBlank()) {
-                    val oldPunctuation = nextText?.first()
-                    val newPunctuation = result.last()
-
-                    if (punctuationChars.contains(oldPunctuation) && punctuationChars.contains(newPunctuation)) {
-                        it.deleteSurroundingText(0, 1)
-                    }
-                }
-                */
-
-                it.beginBatchEdit()
-                // Ensure composing text is finalized before committing final text
-                it.finishComposingText()
-                it.commitText(modifiedResult, 1)
-                it.endBatchEdit()
+            if (connection != null && commitToConnection(connection, computedResult)) {
+                deferredCommitJob?.cancel()
+                deferredCommitJob = null
+                onCancel()
+                return
             }
-            onCancel()
+
+            pendingCommitText.value = computedResult
+            deferredCommitJob?.cancel()
+            deferredCommitJob = this@VoiceInputMethodService.lifecycle.coroutineScope.launch {
+                waitForConnectionAndCommit(computedResult)
+                deferredCommitJob = null
+                onCancel()
+            }
         }
 
         override fun sendPartialResult(result: String): Boolean {
             val ic = this@VoiceInputMethodService.currentInputConnection
             return if (ic != null) {
                 ic.setComposingText(result, 1)
+                lastInputConnection = ic
                 true
             } else {
                 // Defer only final results; partials are best-effort
@@ -348,8 +348,14 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
 
     private var needsInitialization = true
     private val pendingCommitText: MutableState<String?> = mutableStateOf(null)
+    private var lastInputConnection: InputConnection? = null
+    private var deferredCommitJob: Job? = null
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+
+        currentInputConnection?.let { connection ->
+            lastInputConnection = connection
+        }
 
         when (info.inputType and InputType.TYPE_MASK_CLASS) {
             InputType.TYPE_CLASS_NUMBER -> {
@@ -382,12 +388,8 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         // If any final text was pending because there was no input connection when recognition
         // finished, commit it now.
         pendingCommitText.value?.let { text ->
-            currentInputConnection?.let { ic ->
-                ic.beginBatchEdit()
-                ic.finishComposingText()
-                ic.commitText(text, 1)
-                ic.endBatchEdit()
-                pendingCommitText.value = null
+            currentInputConnection?.let { connection ->
+                commitToConnection(connection, text)
             }
         }
         // TODO: Idle state
@@ -398,6 +400,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         recognizer.reset()
 
         needsInitialization = true
+        deferredCommitJob?.cancel()
+        deferredCommitJob = null
+        lastInputConnection = null
     }
 
     override fun onCurrentInputMethodSubtypeChanged(newSubtype: InputMethodSubtype) {
@@ -410,9 +415,55 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
     override fun onDestroy() {
+        deferredCommitJob?.cancel()
+        deferredCommitJob = null
+        lastInputConnection = null
         super.onDestroy()
 
         println("Destroy")
         handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+    }
+
+    private fun commitToConnection(connection: InputConnection, text: String): Boolean {
+        val committed = connection.commitFinalText(text)
+        if (committed) {
+            pendingCommitText.value = null
+            lastInputConnection = connection
+        }
+        return committed
+    }
+
+    private suspend fun waitForConnectionAndCommit(text: String): Boolean {
+        var attemptsRemaining = 20
+        while (attemptsRemaining-- > 0) {
+            if (pendingCommitText.value == null) {
+                return true
+            }
+
+            val connection = currentInputConnection ?: lastInputConnection
+            if (connection != null && commitToConnection(connection, text)) {
+                return true
+            }
+
+            delay(50)
+        }
+
+        return pendingCommitText.value == null
+    }
+
+    private fun InputConnection.commitFinalText(text: CharSequence): Boolean {
+        return try {
+            beginBatchEdit()
+            finishComposingText()
+            commitText(text, 1)
+            true
+        } catch (_: Throwable) {
+            false
+        } finally {
+            try {
+                endBatchEdit()
+            } catch (_: Throwable) {
+            }
+        }
     }
 }

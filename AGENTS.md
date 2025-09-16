@@ -1,35 +1,34 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Android app in Kotlin. Main module: `:app`; auxiliary submodule: `:dep:futopay:android:app` (initialize submodules).
-- Source: `app/src/main/java/org/futo/voiceinput/` with `res/`, `assets/`, `ml/`, and native code in `app/src/main/cpp/`.
-- Flavors (dimension `version`): `dev`, `devSameId`, `playStore`, `standalone`, `fDroid`.
-  - `playStore` uses Play Billing; `standalone`/`fDroid` use PayPal; `dev` adds dev-only code and both billings; update checking varies by flavor.
-- Tests: unit in `app/src/test/java`; instrumented in `app/src/androidTest/java`.
-- Prebuilt AARs in `libs/` (e.g., `vad-release.aar`, `pocketfft-release.aar`).
+- Main Android app lives in `:app`; initialize `:dep:futopay:android:app` with `git submodule update --init --recursive`.
+- Kotlin sources in `app/src/main/java/org/futo/voiceinput/`; UI assets under `app/src/main/res/`, native code in `app/src/main/cpp/`, ML models in `app/src/main/ml/`.
+- Flavor dimension `version` defines `dev`, `devSameId`, `playStore`, `standalone`, and `fDroid`. Billing integrations differ per flavor; review `build.gradle` before toggling.
+- Tests reside in `app/src/test/java` (unit) and `app/src/androidTest/java` (instrumented).
 
 ## Build, Test, and Development Commands
-- Initialize deps: `git submodule update --init --recursive`.
-- Build (POSIX/Windows): `./gradlew assembleStandaloneRelease` / `gradlew.bat assembleStandaloneRelease`.
-- Dev builds: `assembleDevDebug`, install to device: `installDevDebug`.
-- Tests: unit `test` (or `testDevDebugUnitTest`), instrumented `connectedAndroidTest` (requires emulator/device).
-- Lint/clean: `lint`, `clean`.
+- `./gradlew assembleStandaloneRelease`: create production-ready APK with PayPal billing.
+- `./gradlew assembleDevDebug` / `./gradlew installDevDebug`: fast iteration build and install on a connected device.
+- `./gradlew test`: run JVM unit tests (use `./gradlew testDevDebugUnitTest` for flavor-specific checks).
+- `./gradlew connectedAndroidTest`: execute instrumented tests; requires emulator or USB device.
+- `./gradlew lint`: static analysis; run before PRs to catch regressions.
 
 ## Coding Style & Naming Conventions
-- Kotlin style: 4-space indentation, idiomatic Kotlin APIs, null-safety, immutability where practical.
-- Files/classes: PascalCase; functions/variables: lowerCamelCase; constants: UPPER_SNAKE_CASE.
-- Package stays `org.futo.voiceinput`.
-- Resources: lower_snake_case (e.g., `ic_mic_24`, `activity_recognize.xml`, `string/voice_input_*`).
+- Kotlin with 4-space indent, prefer immutable vals, idiomatic null-handling. Enable IDE formatting with ktlint-compatible settings.
+- Classes and files use PascalCase; members are lowerCamelCase; constants UPPER_SNAKE_CASE.
+- Resources follow lower_snake_case (e.g., `string/voice_input_error_api_key`); keep package `org.futo.voiceinput`.
 
 ## Testing Guidelines
-- Frameworks: JUnit 4 for unit tests, AndroidJUnitRunner + Espresso/Compose test APIs for instrumented tests.
-- Name tests `*Test.kt`. Keep unit tests pure/deterministic (no device I/O). Use instrumented tests for UI/integration.
-- Run: `./gradlew test` and `./gradlew connectedAndroidTest` (select the desired variant as needed).
+- JUnit4 for unit tests; AndroidJUnitRunner with Espresso/Compose for UI. Name files `*Test.kt`.
+- Cover new logic paths, especially provider selection and VAD timing. Mock Soniox services in unit tests; reserve network calls for instrumented suites.
+- Run unit tests locally before pushing; include emulator runs when touching IME flows.
+
+## Architecture Overview
+- Default STT provider is on-device Whisper via `AudioRecognizer`. Soniox cloud supports async REST and realtime WebSocket; select via `STT_PROVIDER` setting.
+- Realtime mode streams partial tokens directly into IME using `VoiceInputMethodService`; intent callers display an overlay before committing final text.
+- VAD thresholds (`VAD_SPEECH_MS`, etc.) remain user configurable; ensure new features respect existing defaults.
 
 ## Commit & Pull Request Guidelines
-- Commits: clear, imperative subject (<= 72 chars), optional body with rationale. Reference issues (`Fixes #123`).
-- PRs: include summary, linked issues, affected flavor(s), screenshots for UI changes, and test notes.
-
-## Security & Configuration Tips
-- Do not commit secrets. Optional files: `keystore.properties` (signing) and `crashreporting.properties` (ACRA) are local-only.
-- Native build uses CMake; Gradle manages NDK/CMake. Avoid altering flavor wiring or application IDs without discussion.
+- Commits: imperative subject <= 72 chars, optional body capturing rationale and references (e.g., `Fixes #123`). Group related changes.
+- Pull requests: summarize behavior, call out affected flavors, attach screenshots for UI tweaks, and list executed commands/tests. Highlight configuration steps when Soniox keys or billing modes change.
+- Async Soniox transcripts now keep the IME focused, reusing the last input connection and retrying insertion automatically.

@@ -15,6 +15,7 @@ import com.konovalov.vad.config.SampleRate
 import kotlinx.coroutines.*
 import okhttp3.*
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import okio.IOException
 import org.futo.voiceinput.MagnitudeState
 import org.futo.voiceinput.ml.RunState
@@ -84,6 +85,8 @@ class SonioxRealtimeRecognizer(
         }
         val hints = if (forcedLanguage != null) setOf(forcedLanguage!!) else languages
         val config = JSONObject().apply {
+            // Keep api_key in config for compatibility with Soniox examples,
+            // but also send standard Bearer header on the WebSocket request.
             put("api_key", apiKey)
             put("model", "stt-rt-preview")
             put("audio_format", "pcm_s16le")
@@ -92,12 +95,18 @@ class SonioxRealtimeRecognizer(
             put("enable_language_identification", true)
             put("language_hints", JSONArray(hints.toList()))
         }
-        val req = Request.Builder().url("wss://stt-rt.soniox.com/transcribe-websocket").build()
+        val req = Request.Builder()
+            .url("wss://stt-rt.soniox.com/transcribe-websocket")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .build()
         wsClosed = false
         webSocket = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 wsReady = true
                 webSocket.send(config.toString())
+                lifecycleScope.launch(Dispatchers.Main) {
+                    Toast.makeText(context, "Connected to Soniox realtime", Toast.LENGTH_SHORT).show()
+                }
                 lifecycleScope.launch(Dispatchers.Main) { ui.onDecodingStatus(RunState.StartedDecoding) }
                 startRecordingLoop()
             }
@@ -129,8 +138,22 @@ class SonioxRealtimeRecognizer(
     private fun handleMessage(text: String) {
         try {
             val json = JSONObject(text)
-            if (json.has("tokens")) {
-                val tokens = json.getJSONArray("tokens")
+
+            // Handle explicit server error early
+            if (json.has("error") || json.optString("type") == "error") {
+                val msg = json.optString("error")
+                lifecycleScope.launch(Dispatchers.Main) {
+                    Toast.makeText(context, "Soniox realtime error: ${msg.ifBlank { "Unknown" }}", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+
+            // 1) Token-style responses (preferred): { tokens: [{ text, is_final }, ...] }
+            if (json.has("tokens") || json.has("final_tokens")) {
+                val tokens = when {
+                    json.has("final_tokens") -> json.getJSONArray("final_tokens")
+                    else -> json.getJSONArray("tokens")
+                }
                 val sbNonFinal = StringBuilder()
                 for (i in 0 until tokens.length()) {
                     val t = tokens.getJSONObject(i)
@@ -142,10 +165,29 @@ class SonioxRealtimeRecognizer(
                     }
                 }
                 partialText = sbNonFinal.toString()
-                val current = finalText.toString() + partialText
+                val current = (finalText.toString() + partialText)
                 lifecycleScope.launch(Dispatchers.Main) { ui.onPartialResult(current) }
+                return
             }
-            // Some servers emit a finished marker; we rely on socket close after empty frame
+
+            // 2) Simple text responses, optionally flagged final
+            val simpleText = json.optString("text", json.optString("transcript", ""))
+            if (simpleText.isNotEmpty()) {
+                val isFinal = json.optBoolean("is_final", false) ||
+                        json.optBoolean("final", false) ||
+                        (json.optString("type", "") == "final")
+                if (isFinal) {
+                    finalText.append(simpleText)
+                    partialText = ""
+                } else {
+                    partialText = simpleText
+                }
+                val current = (finalText.toString() + partialText)
+                lifecycleScope.launch(Dispatchers.Main) { ui.onPartialResult(current) }
+                return
+            }
+
+            // If message didn't match known shapes, ignore quietly
         } catch (_: Exception) {
             // ignore malformed
         }
@@ -215,8 +257,13 @@ class SonioxRealtimeRecognizer(
                 // Send audio to WS as little-endian PCM16
                 val bytes = ByteArray(nRead * 2)
                 var j = 0
-                for (i in 0 until nRead) { val s = samples[i].toInt(); bytes[j++] = (s and 0xff).toByte(); bytes[j++] = ((s shr 8) and 0xff).toByte() }
-                webSocket?.send(ByteString.of(*bytes))
+                for (i in 0 until nRead) {
+                    val s = samples[i].toInt()
+                    bytes[j++] = (s and 0xff).toByte()
+                    bytes[j++] = ((s shr 8) and 0xff).toByte()
+                }
+                // Send audio frame as binary
+                webSocket?.send(bytes.toByteString())
 
                 // Auto-finalize with VAD when silent long enough
                 if (hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
