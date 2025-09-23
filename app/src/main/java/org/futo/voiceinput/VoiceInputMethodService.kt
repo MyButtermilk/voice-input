@@ -6,6 +6,7 @@ import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.text.InputType
 import android.view.View
+import android.util.Log
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -30,6 +31,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -66,9 +70,6 @@ import org.futo.voiceinput.migration.scheduleModelMigrationJob
 import org.futo.voiceinput.settings.pages.ConditionalUnpaidNoticeInVoiceInputWindow
 import org.futo.voiceinput.theme.UixThemeAuto
 import org.futo.voiceinput.updates.scheduleUpdateCheckingJob
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 val SupportsNavbarExtension = Build.VERSION.SDK_INT >= 28
 
@@ -164,7 +165,11 @@ fun PreviewRecognizeViewLoadedIME() {
 @Composable
 fun PreviewRecognizeViewNoMicIME() {
     RecognizerInputMethodWindow(switchBack = { }) {
-        RecognizeMicError(openSettings = { })
+        BeautifulRecordingUI(
+            magnitude = 0.0f,
+            state = MagnitudeState.MIC_MAY_BE_BLOCKED,
+            onStop = { }
+        )
     }
 }
 
@@ -199,6 +204,11 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
 
         scheduleUpdateCheckingJob(applicationContext)
         scheduleModelMigrationJob(applicationContext)
+    }
+
+    override fun onEvaluateFullscreenMode(): Boolean {
+        // Never use fullscreen, it can break editor focus/connection
+        return false
     }
 
     private val recognizer = object : RecognizerView() {
@@ -241,51 +251,80 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         }
 
         override fun sendResult(result: String) {
-            val computedResult = if (result.isNotEmpty() && !prevText.isNullOrBlank() && punctuationChars.contains(prevText?.last())) {
-                " $result"
+            val connection = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
+            Log.d("VIIME", "sendResult: curr=" + (this@VoiceInputMethodService.currentInputConnection!=null) + " last=" + (lastInputConnection!=null))
+            val computedResult = if (result.isNotBlank() && !prevText.isNullOrBlank() && punctuationChars.contains(prevText?.last())) {
+                val trimmed = result.trimStart()
+                if (trimmed.isEmpty()) " " else " " + trimmed
             } else {
                 result
             }
 
-            val connection = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
-
-            if (computedResult.isEmpty()) {
-                connection?.let { commitToConnection(it, computedResult) }
-                pendingCommitText.value = null
-                deferredCommitJob?.cancel()
-                deferredCommitJob = null
-                onCancel()
+            if (computedResult.isBlank()) {
+                switchBackAfterResult()
                 return
             }
 
             if (connection != null && commitToConnection(connection, computedResult)) {
-                deferredCommitJob?.cancel()
-                deferredCommitJob = null
-                onCancel()
+                switchBackAfterResult()
                 return
             }
 
             pendingCommitText.value = computedResult
             deferredCommitJob?.cancel()
             deferredCommitJob = this@VoiceInputMethodService.lifecycle.coroutineScope.launch {
-                waitForConnectionAndCommit(computedResult)
-                deferredCommitJob = null
-                onCancel()
+                requestShowSelf(0)
+                var committed = waitForConnectionAndCommit(computedResult)
+                if (!committed) {
+                    committed = lastInputConnection?.let { commitToConnection(it, computedResult) } ?: false
+                }
+                if (!committed) {
+                    try {
+                        Log.w("VIIME", "Falling back to clipboard")
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("voice input", computedResult))
+                        android.widget.Toast.makeText(this@VoiceInputMethodService, getString(R.string.copied_to_clipboard), android.widget.Toast.LENGTH_SHORT).show()
+                    } catch (_: Throwable) { }
+                }
+                switchBackAfterResult()
             }
         }
 
+        private var partialDeferredJob: kotlinx.coroutines.Job? = null
+        private var pendingComposingText: String? = null
         override fun sendPartialResult(result: String): Boolean {
-            val ic = this@VoiceInputMethodService.currentInputConnection
-            return if (ic != null) {
-                ic.setComposingText(result, 1)
-                lastInputConnection = ic
-                true
-            } else {
-                // Defer only final results; partials are best-effort
-                false
+            val ic = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
+            Log.d("VIIME", "sendPartial: curr=" + (this@VoiceInputMethodService.currentInputConnection!=null) + " last=" + (lastInputConnection!=null) + " len=" + result.length)
+            if (ic != null) {
+                try {
+                    ic.setComposingText(result, 1)
+                    lastInputConnection = ic
+                    Log.d("VIIME", "sendPartial: composing ok")
+                    return true
+                } catch (_: Throwable) { }
             }
+            pendingComposingText = result
+            partialDeferredJob?.cancel()
+            partialDeferredJob = this@VoiceInputMethodService.lifecycle.coroutineScope.launch {
+                var attempts = 120
+                while (attempts-- > 0) {
+                    requestShowSelf(0)
+                    val text = pendingComposingText
+                    if (text == null) break
+                    val conn = currentInputConnection ?: lastInputConnection
+                    if (conn != null) {
+                        try {
+                            conn.setComposingText(text, 1)
+                            lastInputConnection = conn
+                            Log.d("VIIME", "sendPartial: composing ok (deferred)")
+                            break
+                        } catch (_: Throwable) { }
+                    }
+                    kotlinx.coroutines.delay(50)
+                }
+            }
+            return false
         }
-
         override fun requestPermission() {
             // We can't ask for permission from a service
             // TODO: We could launch an activity and request it that way
@@ -353,9 +392,7 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
 
-        currentInputConnection?.let { connection ->
-            lastInputConnection = connection
-        }
+        currentInputConnection?.let { lastInputConnection = it }
 
         when (info.inputType and InputType.TYPE_MASK_CLASS) {
             InputType.TYPE_CLASS_NUMBER -> {
@@ -384,15 +421,12 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
             println("Continuing recording, likely due to landscape/portrait switch")
             recognizer.refreshContent()
         }
-
-        // If any final text was pending because there was no input connection when recognition
-        // finished, commit it now.
-        pendingCommitText.value?.let { text ->
-            currentInputConnection?.let { connection ->
-                commitToConnection(connection, text)
-            }
-        }
         // TODO: Idle state
+    }
+
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        currentInputConnection?.let { lastInputConnection = it }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -400,9 +434,6 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         recognizer.reset()
 
         needsInitialization = true
-        deferredCommitJob?.cancel()
-        deferredCommitJob = null
-        lastInputConnection = null
     }
 
     override fun onCurrentInputMethodSubtypeChanged(newSubtype: InputMethodSubtype) {
@@ -415,17 +446,33 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
     override fun onDestroy() {
-        deferredCommitJob?.cancel()
-        deferredCommitJob = null
-        lastInputConnection = null
         super.onDestroy()
 
         println("Destroy")
         handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
+    private fun switchBackAfterResult() {
+        deferredCommitJob?.cancel()
+        deferredCommitJob = null
+        pendingCommitText.value = null
+        recognizer.reset()
+        needsInitialization = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            switchToPreviousInputMethod()
+        } else {
+            inputMethodManager.switchToLastInputMethod(window.window!!.attributes.token)
+        }
+    }
 
     private fun commitToConnection(connection: InputConnection, text: String): Boolean {
+        Log.d("VIIME", "commitToConnection: hasConn=" + (connection!=null) + " len=" + text.length)
+        if (text.isEmpty()) {
+            pendingCommitText.value = null
+            lastInputConnection = connection
+            return true
+        }
         val committed = connection.commitFinalText(text)
+        Log.d("VIIME", "commitFinalText done committed=" + committed)
         if (committed) {
             pendingCommitText.value = null
             lastInputConnection = connection
@@ -434,28 +481,30 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
     private suspend fun waitForConnectionAndCommit(text: String): Boolean {
-        var attemptsRemaining = 20
-        while (attemptsRemaining-- > 0) {
+        var attempts = 40
+        while (attempts-- > 0) {
             if (pendingCommitText.value == null) {
                 return true
             }
-
             val connection = currentInputConnection ?: lastInputConnection
+            Log.d("VIIME", "waitForConnection: attempt=" + attempts + " curr=" + (currentInputConnection!=null) + " last=" + (lastInputConnection!=null))
             if (connection != null && commitToConnection(connection, text)) {
                 return true
             }
-
             delay(50)
         }
-
-        return pendingCommitText.value == null
+        return false
     }
 
     private fun InputConnection.commitFinalText(text: CharSequence): Boolean {
         return try {
             beginBatchEdit()
-            finishComposingText()
+            // Replace any composing (non-final) text with the final text
+            // Clearing composing first prevents duplicates on commit
+            setComposingText("", 1)
             commitText(text, 1)
+            // Ensure no composing remains active
+            finishComposingText()
             true
         } catch (_: Throwable) {
             false
@@ -466,4 +515,5 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
             }
         }
     }
+
 }

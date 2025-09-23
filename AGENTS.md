@@ -5,6 +5,7 @@
 - Kotlin sources in `app/src/main/java/org/futo/voiceinput/`; UI assets under `app/src/main/res/`, native code in `app/src/main/cpp/`, ML models in `app/src/main/ml/`.
 - Flavor dimension `version` defines `dev`, `devSameId`, `playStore`, `standalone`, and `fDroid`. Billing integrations differ per flavor; review `build.gradle` before toggling.
 - Tests reside in `app/src/test/java` (unit) and `app/src/androidTest/java` (instrumented).
+ - IME entrypoint: `VoiceInputMethodService`; Recognize intent entrypoint: `RecognizeActivity`.
 
 ## Build, Test, and Development Commands
 - `./gradlew assembleStandaloneRelease`: create production-ready APK with PayPal billing.
@@ -12,6 +13,7 @@
 - `./gradlew test`: run JVM unit tests (use `./gradlew testDevDebugUnitTest` for flavor-specific checks).
 - `./gradlew connectedAndroidTest`: execute instrumented tests; requires emulator or USB device.
 - `./gradlew lint`: static analysis; run before PRs to catch regressions.
+ - Initialize submodules for PayPal billing: `git submodule update --init --recursive`.
 
 ## Coding Style & Naming Conventions
 - Kotlin with 4-space indent, prefer immutable vals, idiomatic null-handling. Enable IDE formatting with ktlint-compatible settings.
@@ -25,6 +27,8 @@
 
 ## Architecture Overview
 - Default STT provider is on-device Whisper via `AudioRecognizer`. Soniox cloud supports async REST and realtime WebSocket; select via `STT_PROVIDER` setting.
+ - Realtime Soniox streams partial tokens into IME composing text, final results replace partials; async mode behaves like local mode without realtime text.
+ - Settings keys: `STT_PROVIDER`, `SONIOX_MODE`, `SONIOX_API_KEY`, `LANGUAGE_TOGGLES`, `PERSONAL_DICTIONARY`, `ENABLE_SOUND`, `VERBOSE_PROGRESS`.
 - Realtime mode streams partial tokens directly into IME using `VoiceInputMethodService`; intent callers display an overlay before committing final text.
 - VAD thresholds (`VAD_SPEECH_MS`, etc.) remain user configurable; ensure new features respect existing defaults.
 

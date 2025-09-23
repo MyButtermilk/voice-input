@@ -1,14 +1,32 @@
 # Soniox STT on Android: GitHub Findings
 
 ## Summary
-Using Exa web search, we looked for public Android apps on GitHub that integrate Soniox Speech-to-Text (STT). As of this survey, there are no clear, production Android repositories that directly show Soniox integration. We did find the official Soniox org and example libraries (Node, Python, Web), plus general frameworks (e.g., Pipecat) but not Android-specific client code.
+This project contains a working Android integration for Soniox STT in both async and realtime modes. Prior GitHub research found no mature Android samples; therefore, this repository documents concrete implementation details below.
 
-## What We Found
-- Official repos: `soniox/soniox_node`, `soniox/soniox_python`, `soniox/speech-to-text-web`, `soniox/soniox_examples` (no Android sample).
-- Relevant docs (used to infer Android setup):
-  - Real-time WebSocket: `wss://stt-rt.soniox.com/transcribe-websocket`
-  - Async REST: `https://api.soniox.com/v1` (Files API + Transcriptions API)
-  - Core concepts: token streaming, endpoint detection, manual finalization.
+## Implementation in this repo
+
+### Realtime (WebSocket)
+- File: `app/src/main/java/org/futo/voiceinput/providers/soniox/SonioxRealtimeRecognizer.kt`
+- Client interface: `RealtimeSttClient` with implementation `SonioxRealtimeClient`
+- WebSocket endpoint: `wss://stt-rt.soniox.com/transcribe-websocket`
+- Session config JSON includes `api_key`, `model` (e.g., `stt-rt-preview`), `audio_format`, `sample_rate`, `num_channels`, optional `context`, and language options
+- UI behavior: partial tokens are streamed into the composing text; `onRealtimeFinalResult` replaces partials with final text
+
+### Async (REST)
+- File: `app/src/main/java/org/futo/voiceinput/providers/soniox/SonioxAsyncRecognizer.kt`
+- Uploads recorded audio, starts a transcription job, polls for completion
+- Final transcript is committed once ready; no realtime partials in UI
+
+### Settings
+- Provider selection: `STT_PROVIDER` (`whisper_local` | `soniox_cloud`)
+- Mode: `SONIOX_MODE` (`async` | `realtime`)
+- API key: `SONIOX_API_KEY`
+- Location: `app/src/main/java/org/futo/voiceinput/settings/`
+
+### IME integration
+- Entry point: `VoiceInputMethodService` hosts a `RecognizerView` that picks the provider based on settings
+- Realtime mode renders `RealtimeStreamingResult` with partial/final text box
+- Intent flow: `RecognizeActivity` keeps IME focused and returns result via `RecognizerIntent`
 
 ## Typical Android Setup (from docs, adapted to Kotlin)
 - Realtime (WebSocket via OkHttp):
@@ -45,11 +63,9 @@ val req = Request.Builder()
 ```
 
 ## Notes & Recommendations
-- No public Android samples found; follow official docs and adapt OkHttp/Retrofit + AudioRecord.
-- For client apps, generate temporary API keys server-side (per Soniox Auth guidance).
-- Tune endpoint detection and/or use manual finalization for UX; segment long sessions (<~60 min).
-- Keep keys out of the app; use remote config/attestation if possible.
+- Store API keys securely; prefer server-side key issuance or remote config
+- For UX, ensure endpoint detection aligns with your VAD thresholds and allow manual finalize
+- Segment long realtime sessions; handle network errors and reconnection gracefully
 
 ## References
-- Docs: Real-time, Async, API Reference, Endpoint Detection, Manual Finalization
-- Repos: https://github.com/soniox
+- Official Soniox repositories and docs (`https://github.com/soniox`)

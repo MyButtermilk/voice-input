@@ -18,6 +18,18 @@ The following APIs are supported:
 
 Currently this does not support the SpeechRecognizer API, which few apps seem to use. Support for this is planned in the future.
 
+## Speech-to-Text providers
+
+- Local on-device Whisper (default)
+  - Uses whisper.cpp via JNI for fast on-device inference
+  - VAD (voice activity detection) handles auto-start/stop; configurable in settings
+- Soniox Cloud
+  - Async REST mode: records locally and uploads for transcription
+  - Realtime WebSocket mode: streams audio and shows partial tokens live; final text replaces partials
+  - Configure in-app under Settings → Speech: choose provider "Soniox Cloud", set mode (Async/Realtime), and supply your Soniox API key
+
+Realtime behavior (Soniox): partial results werden live angezeigt und als composing Text in die aktuelle Eingabe eingefügt; finale Ergebnisse ersetzen die partials. Ein Fallback über einen Accessibility-Service stellt sicher, dass Ergebnisse auch bei Intent-Nutzern in das fokussierte Feld eingefügt werden.
+
 ## Keyboard support
 
 Keyboard support is touched on in the Help section of the app. In short, the following keyboards are supported:
@@ -69,11 +81,42 @@ You can develop this app by opening it in Android Studio. Otherwise, you can use
 ./gradlew assembleStandaloneRelease
 ```
 
-There are four build flavors:
+There are five product flavors:
 * `dev` - for development, includes Play Store billing and all payment methods, auto-update, etc
+* `devSameId` - like `dev` but uses the same applicationId as release (use with care)
 * `playStore` - Play Store build, does not include auto-update and only includes Play Store billing
-* `standalone` - does not include Play Store billing library, includes auto-update
-* `fDroid` - does not include Play Store billing nor auto-update
+* `standalone` - no Play Store billing, includes auto-update and PayPal (via FutoPay)
+* `fDroid` - no Play Store billing and no auto-update, PayPal only
+
+Helpful commands:
+
+```bash
+# Fast dev iteration
+./gradlew assembleDevDebug
+./gradlew installDevDebug
+
+# Flavor-specific unit tests
+./gradlew testDevDebugUnitTest
+
+# Lint/static analysis
+./gradlew lint
+```
+
+Submodules: initialize the FutoPay Android app before building flavors that include PayPal billing.
+
+```bash
+git submodule update --init --recursive
+```
+
+## Settings
+
+Key options available in Settings → Speech:
+
+- STT provider: "Whisper (on-device)" or "Soniox Cloud"
+- Soniox mode: "Async" or "Realtime"
+- Soniox API key: required for Soniox usage
+- Languages: toggle supported languages and optional personal dictionary
+- VAD & UX: sound effects, animations, verbose progress, and auto-stop thresholds
 
 Some prebuilt binaries are included in the `libs` directory to make the build faster, there are also instructions to build them yourself.
 
