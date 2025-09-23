@@ -52,3 +52,6 @@ app/release/*.apk
 app/release/*.zip
 keystore.properties
 crashreporting.properties
+
+# Do not track local SDK/NDK/JDK bundles
+.tools/
