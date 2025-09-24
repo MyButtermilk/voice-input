@@ -19,6 +19,7 @@ import com.konovalov.vad.config.Model
 import com.konovalov.vad.config.SampleRate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -31,6 +32,7 @@ import org.futo.voiceinput.recognizer.RecognizerUiCallbacks
 import org.futo.voiceinput.settings.LANGUAGE_TOGGLES
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.SONIOX_API_KEY
+import org.futo.voiceinput.settings.SONIOX_CONTEXT_VOCAB
 import org.futo.voiceinput.settings.VAD_END_SOON_MS
 import org.futo.voiceinput.settings.VAD_FINALIZE_MS
 import org.futo.voiceinput.settings.VAD_SILENCE_MS
@@ -58,6 +60,7 @@ class SonioxRealtimeRecognizer(
     private var sttClient: SonioxRealtimeClient? = null
     private val viewModel = RealtimeSttViewModel()
     private var finalizeJob: Job? = null
+    private var autoFinalizeJob: Job? = null
 
     override fun isCurrentlyRecording(): Boolean = isRecording
 
@@ -125,6 +128,12 @@ class SonioxRealtimeRecognizer(
 
         val languages = context.getSettingBlocking(LANGUAGE_TOGGLES.key, LANGUAGE_TOGGLES.default)
         val personalDict = context.getSettingBlocking(PERSONAL_DICTIONARY.key, PERSONAL_DICTIONARY.default)
+        val customVocab = context.getSettingBlocking(SONIOX_CONTEXT_VOCAB.key, SONIOX_CONTEXT_VOCAB.default)
+
+        val combinedContext = sequenceOf(personalDict, customVocab)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(separator = "\n")
 
         val config = JSONObject().apply {
             put("api_key", apiKey)
@@ -132,7 +141,7 @@ class SonioxRealtimeRecognizer(
             put("audio_format", "pcm_s16le")
             put("sample_rate", 16000)
             put("num_channels", 1)
-            if (!personalDict.isNullOrBlank()) put("context", personalDict)
+            if (combinedContext.isNotEmpty()) put("context", combinedContext)
             put("enable_language_identification", true)
             put("enable_endpoint_detection", true)
             // No language_hints: auto-detect languages
@@ -177,6 +186,11 @@ class SonioxRealtimeRecognizer(
         client.onPartial { update ->
             android.util.Log.d("SRT", "partial: final='${update.finalText.take(64)}' partial='${update.partialText.take(64)}'")
             viewModel.updatePartial(update)
+            if (update.partialText.isNotBlank()) {
+                cancelAutoFinalize()
+            } else if (update.finalText.isNotBlank()) {
+                scheduleAutoFinalizeIfIdle()
+            }
             lifecycleScope.launch(Dispatchers.Main) {
                 // Update final results if they changed
                 if (update.finalText.isNotEmpty()) {
@@ -336,8 +350,27 @@ class SonioxRealtimeRecognizer(
         }
     }
 
+    private fun cancelAutoFinalize() {
+        autoFinalizeJob?.cancel()
+        autoFinalizeJob = null
+    }
+
+    private fun scheduleAutoFinalizeIfIdle() {
+        if (!isRecording) return
+        if (finalizeJob != null) return
+        if (autoFinalizeJob != null) return
+        autoFinalizeJob = lifecycleScope.launch {
+            delay(AUTO_FINALIZE_DELAY_MS)
+            val snapshot = viewModel.state.value
+            if (isRecording && finalizeJob == null && snapshot.partialText.isBlank()) {
+                finish()
+            }
+        }
+    }
+
     private fun finish() {
         if (!isRecording) return
+        cancelAutoFinalize()
         isRecording = false
 
         val job = recorderJob
@@ -389,8 +422,13 @@ class SonioxRealtimeRecognizer(
             finalizeJob?.cancel()
             finalizeJob = null
         }
+        cancelAutoFinalize()
         sttClient?.dispose()
         sttClient = null
+    }
+
+    private companion object {
+        private const val AUTO_FINALIZE_DELAY_MS = 200L
     }
 
     private fun focusAudio() {
@@ -415,6 +453,7 @@ class SonioxRealtimeRecognizer(
 
     private fun stopRecordingInternal() {
         isRecording = false
+        cancelAutoFinalize()
         recorderJob?.cancel()
         recorderJob = null
         try {

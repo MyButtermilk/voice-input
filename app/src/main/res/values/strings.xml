@@ -23,6 +23,7 @@
     <string name="voice_input_will_look_like_this">Voice Input will look like this</string>
     <string name="look_for_the_big_off_center_futo_logo_in_the_background">Look for the big off-center FUTO logo in the background!</string>
     <string name="stop_recording">Stop Recording</string>
+    <string name="copied_to_clipboard">Copied to clipboard</string>
     <string name="once_you_re_done_talking_you_can_hit_the_microphone_button_to_stop">Once you\'re done talking, you can hit the microphone button to stop</string>
     <string name="help_paragraph_3">You can use one of the following open-source keyboards that are tested to work:</string>
     <string name="aosp_keyboard_included_in_aosp_based_roms">• AOSP Keyboard, included in AOSP-based ROMs</string>
@@ -61,7 +62,6 @@
     <string name="thank_you_for_using_the_paid_version_of_futo_voice_input">Thank you for using the paid version of FUTO Voice Input!</string>
     <string name="input_test_field">Input test field</string>
     <string name="trigger_voice_input_intent">Trigger voice input</string>
-    <string name="try_saying_something">Try saying something</string>
     <string name="no_audio_detected_is_your_microphone_blocked">No audio detected, is your microphone blocked?</string>
     <string name="listening">Listening… (Tap to stop)</string>
     <string name="grant_microphone_permission_to_use_voice_input">Grant microphone permission to use Voice Input</string>
@@ -202,6 +202,9 @@
     <string name="new_model_features_tip">Models have been updated for better accuracy and faster performance. You can now also add words/phrases in the personal dictionary. If you have any issues or feedback after this change please contact us.</string>
     <string name="personal_dictionary_placeholder">John Doe, Jane Smith, TensorFlow, bobble, type anything you want voice input to recognize more often here!</string>
     <string name="personal_dictionary">Personal Dictionary</string>
+    <string name="soniox_context_vocab_label">Custom Soniox vocabulary</string>
+    <string name="soniox_context_vocab_description">Optional phrases sent to Soniox as context to improve recognition. Separate entries with commas or new lines.</string>
+    <string name="soniox_context_vocab_placeholder">Acme, Project Atlas, Dr. Mueller</string>
     <string name="manual_language_selection_toggle_subtitle">Avoids model switching delay if you have multiple languages enabled</string>
     <string name="unpaid_futo_voice_input">Unpaid FUTO Voice Input</string>
     <string name="pay_for_futo_voice_input">Pay for FUTO Voice Input</string>

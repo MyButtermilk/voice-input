@@ -68,6 +68,8 @@ import androidx.savedstate.findViewTreeSavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import org.futo.voiceinput.migration.scheduleModelMigrationJob
 import org.futo.voiceinput.settings.pages.ConditionalUnpaidNoticeInVoiceInputWindow
+import org.futo.voiceinput.accessibility.TextInsertionAccessibilityService
+import org.futo.voiceinput.ui.BeautifulRecordingUI
 import org.futo.voiceinput.theme.UixThemeAuto
 import org.futo.voiceinput.updates.scheduleUpdateCheckingJob
 
@@ -168,6 +170,8 @@ fun PreviewRecognizeViewNoMicIME() {
         BeautifulRecordingUI(
             magnitude = 0.0f,
             state = MagnitudeState.MIC_MAY_BE_BLOCKED,
+            finalText = "",
+            partialText = "",
             onStop = { }
         )
     }
@@ -279,12 +283,20 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
                     committed = lastInputConnection?.let { commitToConnection(it, computedResult) } ?: false
                 }
                 if (!committed) {
-                    try {
-                        Log.w("VIIME", "Falling back to clipboard")
-                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("voice input", computedResult))
-                        android.widget.Toast.makeText(this@VoiceInputMethodService, getString(R.string.copied_to_clipboard), android.widget.Toast.LENGTH_SHORT).show()
-                    } catch (_: Throwable) { }
+                    val accessibilityActive = TextInsertionAccessibilityService.isActive()
+                    Log.w("VIIME", "commit failed; accessibilityActive=${'$'}accessibilityActive")
+                    if (accessibilityActive) {
+                        TextInsertionAccessibilityService.requestInsert(computedResult)
+                    } else {
+                        try {
+                            Log.w("VIIME", "Falling back to clipboard")
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("voice input", computedResult))
+                            android.widget.Toast.makeText(this@VoiceInputMethodService, getString(R.string.copied_to_clipboard), android.widget.Toast.LENGTH_SHORT).show()
+                        } catch (t: Throwable) {
+                            Log.e("VIIME", "Clipboard fallback failed", t)
+                        }
+                    }
                 }
                 switchBackAfterResult()
             }
@@ -517,3 +529,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
 }
+
+
+
+
+
+

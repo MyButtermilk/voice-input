@@ -30,6 +30,7 @@ import org.futo.voiceinput.settings.IS_VAD_ENABLED
 import org.futo.voiceinput.settings.LANGUAGE_TOGGLES
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.SONIOX_API_KEY
+import org.futo.voiceinput.settings.SONIOX_CONTEXT_VOCAB
 import org.futo.voiceinput.settings.getSetting
 import org.futo.voiceinput.settings.VAD_SPEECH_MS
 import org.futo.voiceinput.settings.VAD_SILENCE_MS
@@ -394,9 +395,14 @@ class SonioxAsyncRecognizer(
             // Build transcription config
             val languages = context.getSetting(LANGUAGE_TOGGLES)
             val personalDict = context.getSetting(PERSONAL_DICTIONARY)
+            val customVocab = context.getSetting(SONIOX_CONTEXT_VOCAB)
+            val combinedContext = sequenceOf(personalDict, customVocab)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(separator = "\n")
             val config = JSONObject().apply {
                 put("model", "stt-async-preview")
-                if (!personalDict.isNullOrBlank()) put("context", personalDict)
+                if (combinedContext.isNotEmpty()) put("context", combinedContext)
                 put("enable_language_identification", true)
                 val hints = if (forcedLanguage != null) setOf(forcedLanguage!!) else languages
                 put("language_hints", org.json.JSONArray(hints.toList()))

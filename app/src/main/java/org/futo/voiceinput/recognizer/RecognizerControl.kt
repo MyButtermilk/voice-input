@@ -27,4 +27,7 @@ interface RecognizerUiCallbacks {
     fun onRecordingStarted()
     fun onUpdateMagnitude(magnitude: Float, state: MagnitudeState)
     fun onProcessing()
+    fun onRealtimeFinalResult(result: String) {}
+    fun onRealtimeError(message: String) {}
 }
+

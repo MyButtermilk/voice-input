@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
@@ -31,6 +32,7 @@ fun SpeechProviderScreen(
     val (provider, setProvider) = useDataStore(STT_PROVIDER.key, STT_PROVIDER.default)
     val (apiKey, setApiKey) = useDataStore(SONIOX_API_KEY.key, SONIOX_API_KEY.default)
     val (mode, setMode) = useDataStore(SONIOX_MODE.key, SONIOX_MODE.default)
+    val (contextVocab, setContextVocab) = useDataStore(SONIOX_CONTEXT_VOCAB.key, SONIOX_CONTEXT_VOCAB.default)
 
     ScrollableList {
         ScreenTitle(title = stringResource(R.string.stt_provider), showBack = true, navController = navController)
@@ -67,6 +69,27 @@ fun SpeechProviderScreen(
                 value = textFieldValue.value,
                 onValueChange = { textFieldValue.value = it },
                 placeholder = { Text(stringResource(R.string.soniox_api_key_placeholder)) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp, 4.dp)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = stringResource(R.string.soniox_context_vocab_label),
+                modifier = Modifier.padding(16.dp, 4.dp)
+            )
+            Text(
+                text = stringResource(R.string.soniox_context_vocab_description),
+                modifier = Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall
+            )
+            val contextFieldValue = remember { mutableStateOf(contextVocab) }
+            LaunchedEffect(contextFieldValue.value) { setContextVocab(contextFieldValue.value) }
+            TextField(
+                value = contextFieldValue.value,
+                onValueChange = { contextFieldValue.value = it },
+                placeholder = { Text(stringResource(R.string.soniox_context_vocab_placeholder)) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(8.dp, 4.dp)

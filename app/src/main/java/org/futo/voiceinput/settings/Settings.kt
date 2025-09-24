@@ -155,6 +155,7 @@ val DISMISS_MIGRATION_TIP = SettingsKey(key = booleanPreferencesKey("dismiss_mig
 val STT_PROVIDER = SettingsKey(stringPreferencesKey("stt_provider"), "whisper_local")
 val SONIOX_API_KEY = SettingsKey(stringPreferencesKey("soniox_api_key"), "")
 val SONIOX_MODE = SettingsKey(stringPreferencesKey("soniox_mode"), "async")
+val SONIOX_CONTEXT_VOCAB = SettingsKey(stringPreferencesKey("soniox_context_vocab"), "")
 
 // VAD thresholds (milliseconds)
 val VAD_SPEECH_MS = SettingsKey(intPreferencesKey("vad_speech_ms"), 150)

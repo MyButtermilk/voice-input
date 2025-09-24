@@ -57,6 +57,7 @@ class SonioxRealtimeClient(
     private val finalDeferred = CompletableDeferred<String>()
     private val finalBuilder = StringBuilder()
     private var lastPartial: String = ""
+    private var awaitingSessionFinal = false
     private var closeJob: Job? = null
 
     override suspend fun start(): Boolean {
@@ -77,6 +78,7 @@ class SonioxRealtimeClient(
                     }
                     Log.d("SRT", "config=${cfg.toString()}")
                 } catch (_: Exception) { }
+                awaitingSessionFinal = false
                 webSocket.send(sessionConfigJson)
                 if (!startDeferred.isCompleted) {
                     startDeferred.complete(true)
@@ -92,6 +94,7 @@ class SonioxRealtimeClient(
                 if (!finalDeferred.isCompleted) {
                     finalDeferred.complete(finalBuilder.toString())
                 }
+                awaitingSessionFinal = false
                 isReady = false
                 webSocket.close(code, reason)
             }
@@ -100,6 +103,7 @@ class SonioxRealtimeClient(
                 if (!finalDeferred.isCompleted) {
                     finalDeferred.complete(finalBuilder.toString())
                 }
+                awaitingSessionFinal = false
                 isReady = false
             }
 
@@ -116,6 +120,7 @@ class SonioxRealtimeClient(
                 if (!finalDeferred.isCompleted) {
                     finalDeferred.complete(finalBuilder.toString())
                 }
+                awaitingSessionFinal = false
                 isReady = false
             }
         })
@@ -139,7 +144,11 @@ class SonioxRealtimeClient(
             }
             return
         }
+        awaitingSessionFinal = true
         webSocket?.send(ByteString.EMPTY)
+        if (lastPartial.isEmpty() && finalBuilder.isNotEmpty()) {
+            emitFinal(finalBuilder.toString())
+        }
         if (closeJob == null) {
             closeJob = scope.launch(Dispatchers.IO) {
                 // Safety timeout in case server never closes the socket
@@ -155,6 +164,7 @@ class SonioxRealtimeClient(
     override fun dispose() {
         closeJob?.cancel()
         closeJob = null
+        awaitingSessionFinal = false
         try {
             webSocket?.close(1000, "")
         } catch (_: Exception) {
@@ -459,9 +469,9 @@ class SonioxRealtimeClient(
 
     private fun emitFinal(text: String) {
         finalListeners.forEach { listener -> listener(text) }
-        // Complete final immediately when we have it to avoid waiting for socket close
-        if (!finalDeferred.isCompleted) {
+        if (awaitingSessionFinal && !finalDeferred.isCompleted) {
             finalDeferred.complete(text)
+            awaitingSessionFinal = false
         }
     }
 
