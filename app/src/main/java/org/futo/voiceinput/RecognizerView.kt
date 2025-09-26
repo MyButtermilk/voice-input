@@ -475,8 +475,12 @@ abstract class RecognizerView {
                 if (shouldBeVerbose) sendPartialResult(result)
             }
             override fun onRealtimeFinalResult(result: String) {
-                realtimeFinalText.value = result
-                realtimePartialText.value = ""
+                onRealtimeRender(result, "")
+            }
+            override fun onRealtimeRender(finalText: String, partialText: String) {
+                realtimeFinalText.value = finalText
+                realtimePartialText.value = partialText
+                if (shouldBeVerbose && partialText.isNotBlank()) sendPartialResult(partialText)
             }
             override fun onDecodingStatus(status: RunState) {
                 val text = if (shouldBeVerbose) context.getString(R.string.processing) else context.getString(R.string.processing)
@@ -560,8 +564,12 @@ abstract class RecognizerView {
                 if (shouldBeVerbose) sendPartialResult(result)
             }
             override fun onRealtimeFinalResult(result: String) {
-                realtimeFinalText.value = result
-                realtimePartialText.value = ""
+                onRealtimeRender(result, "")
+            }
+            override fun onRealtimeRender(finalText: String, partialText: String) {
+                realtimeFinalText.value = finalText
+                realtimePartialText.value = partialText
+                if (shouldBeVerbose && partialText.isNotBlank()) sendPartialResult(partialText)
             }
             override fun onDecodingStatus(status: RunState) {
                 val text = context.getString(R.string.processing)

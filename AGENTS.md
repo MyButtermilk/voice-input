@@ -36,3 +36,9 @@
 - Commits: imperative subject <= 72 chars, optional body capturing rationale and references (e.g., `Fixes #123`). Group related changes.
 - Pull requests: summarize behavior, call out affected flavors, attach screenshots for UI tweaks, and list executed commands/tests. Highlight configuration steps when Soniox keys or billing modes change.
 - Async Soniox transcripts now keep the IME focused, reusing the last input connection and retrying insertion automatically.
+
+## Soniox Realtime Notes
+- Realtime client sanitizes Soniox control markers (`<fin>`, `<end>`) before emitting partial/final text, preventing stray tokens in transcripts.
+- `<fin>` messages now trigger immediate `finalizeSession`, which closes the websocket early instead of waiting for server timeouts.
+- `stopAndFinalize()` still sends trailing silence and the finalize control frame; on-device logging (`adb logcat -s SRT SonioxRealtime SmartTurnEngine`) should show `processTokenPayload: encountered <fin>` followed by `finalizeSession start...` when the marker arrives.
+- Always reinstall after modifying Soniox code (`./gradlew installDevDebug`) so the updated sanitizers take effect on-device.

@@ -1,5 +1,6 @@
 package org.futo.voiceinput.providers.soniox
 
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -24,7 +25,7 @@ interface RealtimeSttClient {
     suspend fun start(): Boolean
     fun sendAudio(frame: ByteArray)
     fun stopAndFinalize()
-    fun dispose()
+    fun dispose(reason: String = "unspecified")
     fun onPartial(listener: (RealtimePartial) -> Unit)
     fun onFinal(listener: (String) -> Unit)
     fun onError(listener: (String) -> Unit)
@@ -58,12 +59,16 @@ class SonioxRealtimeClient(
     private val finalBuilder = StringBuilder()
     private var lastPartial: String = ""
     private var awaitingSessionFinal = false
+    private var sessionFinished = false
+    private var finalEmitted = false
     private var closeJob: Job? = null
 
     override suspend fun start(): Boolean {
         if (startDeferred.isCompleted) {
             return startDeferred.await()
         }
+        sessionFinished = false
+        finalEmitted = false
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isReady = true
@@ -78,7 +83,7 @@ class SonioxRealtimeClient(
                     }
                     Log.d("SRT", "config=${cfg.toString()}")
                 } catch (_: Exception) { }
-                awaitingSessionFinal = false
+                updateAwaitingSessionFinal(false, "onOpen")
                 webSocket.send(sessionConfigJson)
                 if (!startDeferred.isCompleted) {
                     startDeferred.complete(true)
@@ -91,25 +96,23 @@ class SonioxRealtimeClient(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                if (!finalDeferred.isCompleted) {
-                    finalDeferred.complete(finalBuilder.toString())
-                }
-                awaitingSessionFinal = false
+                Log.d("SRT", "onClosing code=$code reason=$reason")
+                completeFinalDeferred("onClosing", finalBuilder.toString())
+                updateAwaitingSessionFinal(false, "onClosing code=$code reason=$reason")
                 isReady = false
                 webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!finalDeferred.isCompleted) {
-                    finalDeferred.complete(finalBuilder.toString())
-                }
-                awaitingSessionFinal = false
+                Log.d("SRT", "onClosed code=$code reason=$reason")
+                completeFinalDeferred("onClosed", finalBuilder.toString())
+                updateAwaitingSessionFinal(false, "onClosed code=$code reason=$reason")
                 isReady = false
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val message = t.message ?: "Unknown error"
-                Log.e("SRT", "onFailure: ${'$'}message", t)
+                Log.e("SRT", "onFailure: $message", t)
                 response?.let {
                     Log.e("SRT", "onFailure: responseCode=${it.code} body=${it.body?.string()?.take(256)}")
                 }
@@ -117,10 +120,8 @@ class SonioxRealtimeClient(
                 if (!startDeferred.isCompleted) {
                     startDeferred.complete(false)
                 }
-                if (!finalDeferred.isCompleted) {
-                    finalDeferred.complete(finalBuilder.toString())
-                }
-                awaitingSessionFinal = false
+                completeFinalDeferred("onFailure", finalBuilder.toString())
+                updateAwaitingSessionFinal(false, "onFailure message=$message")
                 isReady = false
             }
         })
@@ -138,41 +139,54 @@ class SonioxRealtimeClient(
     }
 
     override fun stopAndFinalize() {
+        Log.d("SRT", "stopAndFinalize invoked isReady=$isReady awaitingSessionFinal=$awaitingSessionFinal finalCompleted=${finalDeferred.isCompleted} finalLen=${finalBuilder.length} partialLen=${lastPartial.length} pendingFrames=${pendingFrames.size} closeJobActive=${closeJob != null}")
         if (!isReady) {
-            if (!finalDeferred.isCompleted) {
-                finalDeferred.complete(finalBuilder.toString())
-            }
+            Log.d("SRT", "stopAndFinalize: socket not ready, completing with current finalBuilder")
+            completeFinalDeferred("stopAndFinalize socket not ready", finalBuilder.toString())
             return
         }
-        awaitingSessionFinal = true
+        updateAwaitingSessionFinal(true, "stopAndFinalize requested")
+        Log.d("SRT", "stopAndFinalize: sending trailing silence")
+        val trailingSilence = ByteArray(3200)
+        repeat(5) { webSocket?.send(trailingSilence.toByteString()) }
+        Log.d("SRT", "stopAndFinalize: sending EOS frame (pendingFrames=${pendingFrames.size})")
         webSocket?.send(ByteString.EMPTY)
+        Log.d("SRT", "stopAndFinalize: sending finalize control frame")
+        webSocket?.send("{\"type\":\"finalize\"}")
         if (lastPartial.isEmpty() && finalBuilder.isNotEmpty()) {
+            Log.d("SRT", "stopAndFinalize: promoting buffered finalBuilder to listeners")
             emitFinal(finalBuilder.toString())
         }
         if (closeJob == null) {
             closeJob = scope.launch(Dispatchers.IO) {
-                // Safety timeout in case server never closes the socket
+                val start = SystemClock.elapsedRealtime()
                 try {
                     finalDeferred.await()
-                } catch (_: Exception) {
-                    // ignored
+                    Log.d("SRT", "stopAndFinalize: finalDeferred completed after ${SystemClock.elapsedRealtime() - start} ms")
+                } catch (ex: Exception) {
+                    Log.w("SRT", "stopAndFinalize: wait for finalDeferred failed: ${ex.message}")
                 }
             }
+        } else {
+            Log.d("SRT", "stopAndFinalize: closeJob already running")
         }
     }
 
-    override fun dispose() {
+    override fun dispose(reason: String) {
+        Log.d("SRT", "dispose(reason=$reason): awaitingSessionFinal=$awaitingSessionFinal closeJobActive=${closeJob != null} finalCompleted=${finalDeferred.isCompleted} finalLen=${finalBuilder.length} partialLen=${lastPartial.length}")
         closeJob?.cancel()
         closeJob = null
-        awaitingSessionFinal = false
+        updateAwaitingSessionFinal(false, "dispose reason=$reason")
         try {
             webSocket?.close(1000, "")
-        } catch (_: Exception) {
+        } catch (ex: Exception) {
+            Log.w("SRT", "dispose(reason=$reason): error closing websocket: ${ex.message}")
         } finally {
             webSocket = null
         }
         if (!finalDeferred.isCompleted) {
-            finalDeferred.complete(finalBuilder.toString())
+            Log.d("SRT", "dispose(reason=$reason): completing finalDeferred with buffered text")
+            completeFinalDeferred("dispose", finalBuilder.toString())
         }
     }
 
@@ -207,18 +221,21 @@ class SonioxRealtimeClient(
                 val msg = payload.optString("error_message", "Unknown error")
                 Log.e("SRT", "error_code=${code} error_message=${msg}")
                 emitError("${code}: ${msg}")
+                handleFinishedIfNeeded(payload)
                 return
             }
 
             if (payload.has("error") || payload.optString("type") == "error") {
                 val msg = payload.optString("error_message", payload.optString("error", "Unknown error"))
                 emitError(msg)
+                handleFinishedIfNeeded(payload)
                 return
             }
 
             payload.optJSONObject("error")?.let { errorObject ->
                 val msg = errorObject.optString("message", errorObject.optString("error", "Unknown error"))
                 emitError(msg)
+                handleFinishedIfNeeded(payload)
                 return
             }
 
@@ -229,6 +246,7 @@ class SonioxRealtimeClient(
                     isSessionConfigured = true
                     flushPendingFrames()
                 }
+                handleFinishedIfNeeded(payload)
                 return
             }
 
@@ -237,6 +255,7 @@ class SonioxRealtimeClient(
                     isSessionConfigured = true
                     flushPendingFrames()
                 }
+                handleFinishedIfNeeded(payload)
                 return
             }
 
@@ -246,14 +265,19 @@ class SonioxRealtimeClient(
                 payload.optJSONObject("d")?.optStringOrNull("text")?.let { txt ->
                     lastPartial = txt
                     emitPartial()
+                    handleFinishedIfNeeded(payload)
                     return
                 }
             } else if (event.equals("final", true) || event.equals("final_result", true)) {
                 payload.optJSONObject("d")?.optStringOrNull("text")?.let { txt ->
-                    finalBuilder.append(txt)
+                    val sanitized = sanitizeFinalText(txt)
+                    if (sanitized.isNotEmpty()) {
+                        finalBuilder.append(sanitized)
+                    }
                     lastPartial = ""
                     emitPartial()
                     emitFinal(finalBuilder.toString())
+                    handleFinishedIfNeeded(payload)
                     return
                 }
             }
@@ -267,13 +291,14 @@ class SonioxRealtimeClient(
             var partialUpdated = false
 
             if (!finalFromFields.isNullOrEmpty()) {
+                val sanitizedFinal = sanitizeFinalText(finalFromFields)
                 finalBuilder.setLength(0)
-                finalBuilder.append(finalFromFields)
+                finalBuilder.append(sanitizedFinal)
                 finalUpdated = true
             }
 
             if (!partialFromFields.isNullOrEmpty()) {
-                lastPartial = partialFromFields
+                lastPartial = sanitizeFinalText(partialFromFields)
                 partialUpdated = true
             }
 
@@ -301,13 +326,16 @@ class SonioxRealtimeClient(
                         payload.optBoolean("is_final", false) ||
                         payload.optBoolean("final", false) ||
                         payload.optString("type", "") == "final"
+                val sanitizedSimple = sanitizeFinalText(simpleText)
                 if (isFinal) {
-                    finalBuilder.append(simpleText)
+                    if (sanitizedSimple.isNotEmpty()) {
+                        finalBuilder.append(sanitizedSimple)
+                    }
                     lastPartial = ""
                     finalUpdated = true
                     partialUpdated = true
                 } else {
-                    lastPartial = simpleText
+                    lastPartial = sanitizedSimple
                     partialUpdated = true
                 }
             }
@@ -329,6 +357,9 @@ class SonioxRealtimeClient(
                     emitFinal(finalBuilder.toString())
                 }
             }
+
+            handleFinishedIfNeeded(payload)
+
         } catch (_: Exception) {
             // Ignore malformed messages
         }
@@ -345,6 +376,7 @@ class SonioxRealtimeClient(
         var finalUpdated = false
         var replacedFinal = false
         var consumedToken = false
+        var encounteredFinalMarker = false
         val partialBuilder = StringBuilder()
 
         for (source in sources) {
@@ -356,6 +388,14 @@ class SonioxRealtimeClient(
             for (i in 0 until array.length()) {
                 val token = array.optJSONObject(i) ?: continue
                 val text = token.optString("text", "")
+                if (text == "<fin>") {
+                    if (!encounteredFinalMarker) {
+                        Log.d("SRT", "processTokenPayload: encountered <fin> token; scheduling finalize")
+                    }
+                    encounteredFinalMarker = true
+                    consumedToken = true
+                    continue
+                }
                 if (text.isEmpty() || text == "<end>") continue
                 consumedToken = true
                 val isFinal = when (source.handling) {
@@ -382,13 +422,18 @@ class SonioxRealtimeClient(
 
         lastPartial = newPartial
 
-        if (!partialChanged && !finalUpdated && !replacedFinal) {
+        if (!partialChanged && !finalUpdated && !replacedFinal && !encounteredFinalMarker) {
             return false
         }
 
-        emitPartial()
+        if (partialChanged || finalUpdated || replacedFinal) {
+            emitPartial()
+        }
         if (finalUpdated || replacedFinal) {
             emitFinal(finalBuilder.toString())
+        }
+        if (encounteredFinalMarker) {
+            finalizeSession("fin token")
         }
         return true
     }
@@ -457,6 +502,66 @@ class SonioxRealtimeClient(
         val handling: TokenHandling
     )
 
+    private fun updateAwaitingSessionFinal(target: Boolean, reason: String) {
+        if (awaitingSessionFinal != target) {
+            Log.d("SRT", "awaitingSessionFinal $awaitingSessionFinal -> $target (reason=$reason) finalCompleted=${finalDeferred.isCompleted}")
+        } else {
+            Log.d("SRT", "awaitingSessionFinal remains $target (reason=$reason) finalCompleted=${finalDeferred.isCompleted}")
+        }
+        awaitingSessionFinal = target
+    }
+
+    private fun completeFinalDeferred(reason: String, text: String = finalBuilder.toString()) {
+        val sanitized = sanitizeFinalText(text)
+        if (!finalDeferred.isCompleted) {
+            Log.d("SRT", "completeFinalDeferred(reason=$reason, textLen=${sanitized.length}) awaitingSessionFinal=$awaitingSessionFinal")
+            finalDeferred.complete(sanitized)
+        } else {
+            Log.d("SRT", "completeFinalDeferred skipped (already completed) reason=$reason textLen=${sanitized.length}")
+        }
+    }
+
+    private fun finalizeSession(reason: String) {
+        if (sessionFinished) {
+            Log.d("SRT", "finalizeSession skipped (already finished) reason=$reason")
+            return
+        }
+        sessionFinished = true
+        Log.d("SRT", "finalizeSession start reason=$reason finalEmitted=$finalEmitted finalLen=${finalBuilder.length}")
+        if (lastPartial.isNotEmpty()) {
+            Log.d("SRT", "finalizeSession reason=$reason: promoting remaining partial tail")
+            finalBuilder.append(lastPartial)
+            lastPartial = ""
+            emitPartial()
+        }
+        val sanitized = sanitizeFinalText(finalBuilder.toString())
+        if (sanitized != finalBuilder.toString()) {
+            finalBuilder.setLength(0)
+            finalBuilder.append(sanitized)
+        }
+        if (!finalEmitted) {
+            emitFinal(finalBuilder.toString())
+        }
+        Log.d("SRT", "finalizeSession reason=$reason finalLen=${finalBuilder.length}")
+        updateAwaitingSessionFinal(false, reason)
+        completeFinalDeferred(reason, finalBuilder.toString())
+        try {
+            webSocket?.close(1000, reason)
+        } catch (_: Exception) { }
+    }
+
+    private fun handleFinishedIfNeeded(payload: JSONObject) {
+        if (payload.optBoolean("finished", false)) {
+            finalizeSession("finished flag")
+        }
+    }
+
+    private fun sanitizeFinalText(text: String): String {
+        if (text.isEmpty()) return text
+        val withoutMarkers = text.replace("<fin>", "").replace("<end>", "")
+        return withoutMarkers.replace(Regex("\\s+$"), "").trimEnd()
+    }
+
     private fun emitPartial() {
         // Only display composing text for non-final; final stays in finalBuilder
         val snapshot = RealtimePartial(finalBuilder.toString(), lastPartial)
@@ -465,14 +570,14 @@ class SonioxRealtimeClient(
         }
     }
 
-
-
     private fun emitFinal(text: String) {
-        finalListeners.forEach { listener -> listener(text) }
-        if (!finalDeferred.isCompleted) {
-            finalDeferred.complete(text)
+        val sanitized = sanitizeFinalText(text)
+        if (sanitized != finalBuilder.toString()) {
+            finalBuilder.setLength(0)
+            finalBuilder.append(sanitized)
         }
-        awaitingSessionFinal = false
+        finalEmitted = true
+        finalListeners.forEach { listener -> listener(sanitized) }
     }
 
     private fun emitError(message: String) {
@@ -493,3 +598,4 @@ class SonioxRealtimeClient(
         return listOfNotNull(data, result, payload, message).any { containsAnyTextLike(it) }
     }
 }
+

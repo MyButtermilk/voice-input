@@ -71,7 +71,7 @@ class SonioxRealtimeRecognizer(
 
     override fun reset() {
         stopRecordingInternal()
-        disposeClient()
+        disposeClient(reason = "reset")
         isVADPaused = false
         viewModel.reset()
         terminationStrategy = null
@@ -155,7 +155,7 @@ class SonioxRealtimeRecognizer(
             .addHeader("Authorization", "Bearer $apiKey")
             .build()
 
-        disposeClient()
+        disposeClient(reason = "new session setup")
         val client = SonioxRealtimeClient(httpClient, request, config.toString(), lifecycleScope)
         attachClientListeners(client)
         sttClient = client
@@ -174,7 +174,7 @@ class SonioxRealtimeRecognizer(
                     ui.onRealtimeError("Failed to connect to Soniox realtime")
                     ui.onFinished("")
                 }
-                disposeClient()
+                disposeClient(reason = "start failed")
                 return@launch
             }
 
@@ -189,34 +189,31 @@ class SonioxRealtimeRecognizer(
         client.onPartial { update ->
             android.util.Log.d("SRT", "partial: final='${update.finalText.take(64)}' partial='${update.partialText.take(64)}'")
             viewModel.updatePartial(update)
-            if (update.partialText.isNotBlank()) {
+            val render = viewModel.currentRenderState()
+            if (render.partialTail.isNotBlank()) {
                 cancelAutoFinalize()
-            } else if (update.finalText.isNotBlank()) {
+            } else if (render.finalText.isNotBlank()) {
                 scheduleAutoFinalizeIfIdle()
             }
             lifecycleScope.launch(Dispatchers.Main) {
-                // Update final results if they changed
-                if (update.finalText.isNotEmpty()) {
-                    ui.onRealtimeFinalResult(update.finalText)
-                }
-                // Always update partial results (this will trigger renderRealtimeUi)
-                ui.onPartialResult(update.partialText)
+                ui.onRealtimeRender(render.finalText, render.partialTail)
             }
         }
         client.onFinal { final ->
             android.util.Log.d("SRT", "final: '${final.take(64)}'")
             viewModel.updateFinal(final)
+            val render = viewModel.currentRenderState()
             lifecycleScope.launch(Dispatchers.Main) {
-                ui.onRealtimeFinalResult(final)
-                ui.onPartialResult("") // Clear partial result
-                // Do not close/commit here; wait for VAD-end or user stop
+                ui.onRealtimeRender(render.finalText, render.partialTail)
             }
         }
         client.onError { message ->
             android.util.Log.e("SRT", "Soniox realtime error: $message")
             viewModel.setError(message)
+            val render = viewModel.currentRenderState()
             lifecycleScope.launch(Dispatchers.Main) {
                 Toast.makeText(context, "Soniox realtime error: $message", Toast.LENGTH_LONG).show()
+                ui.onRealtimeRender(render.finalText, render.partialTail)
                 ui.onRealtimeError(message)
             }
         }
@@ -356,7 +353,13 @@ class SonioxRealtimeRecognizer(
         // Do not switch UI to "Processing" for realtime; keep showing streaming UI
         if (client == null) {
             val finalText = viewModel.combinedText()
-            lifecycleScope.launch(Dispatchers.Main) { ui.onFinished(finalText) }
+            android.util.Log.d("SonioxRealtime", "finish(): client null, inserting combined text='${finalText}'")
+            viewModel.updateFinal(finalText)
+            val render = viewModel.currentRenderState()
+            lifecycleScope.launch(Dispatchers.Main) {
+                ui.onRealtimeRender(render.finalText, render.partialTail)
+                ui.onFinished(finalText)
+            }
             return
         }
 
@@ -365,32 +368,44 @@ class SonioxRealtimeRecognizer(
         client.stopAndFinalize()
         android.util.Log.d("SRT", "stopAndFinalize sent")
         finalizeJob = lifecycleScope.launch(Dispatchers.IO) {
-            val result = try {
+            val awaited = try {
                 withTimeout(30_000) { client.awaitFinalResult() }
             } catch (ex: Exception) {
                 android.util.Log.w("SonioxRealtime", "awaitFinalResult failed: ${ex.message}")
-                viewModel.combinedText()
+                ""
             }
-            val combined = viewModel.combinedText()
-            val finalText = if (combined.length > result.length) combined else result
-            android.util.Log.d("SonioxRealtime", "final text='${finalText}' (len=${finalText.length}) resultLen=${result.length} combinedLen=${combined.length}")
+            val beforeDrain = viewModel.currentRenderState()
+            android.util.Log.d("SonioxRealtime", "awaitFinalResult returned (awaitedLen=${awaited.length}) beforeDrain final='${beforeDrain.finalText}' partial='${beforeDrain.partialTail}'")
+            val drainStart = System.currentTimeMillis()
+            viewModel.awaitDrain()
+            val drainElapsed = System.currentTimeMillis() - drainStart
+            android.util.Log.d("SonioxRealtime", "awaitDrain completed in ${drainElapsed} ms; promoting partial tail if present")
+            viewModel.promotePartialToFinal()
+            var finalText = viewModel.combinedText().trim()
+            if (finalText.isBlank()) {
+                finalText = awaited.trim()
+            }
+            val renderAfterPromotion = viewModel.currentRenderState()
+            android.util.Log.d("SonioxRealtime", "final text='${finalText}' finalLen=${renderAfterPromotion.finalText.length} partialLen=${renderAfterPromotion.partialTail.length} awaitedLen=${awaited.length}")
             viewModel.updateFinal(finalText)
+            val renderAfterFinal = viewModel.currentRenderState()
             withContext(Dispatchers.Main) {
-                ui.onRealtimeFinalResult(viewModel.finalText())
+                ui.onRealtimeRender(renderAfterFinal.finalText, renderAfterFinal.partialTail)
                 ui.onFinished(finalText)
             }
-            disposeClient(cancelFinalize = false)
+            disposeClient(cancelFinalize = false, reason = "finish finalize")
             this@SonioxRealtimeRecognizer.finalizeJob = null
         }
     }
 
-    private fun disposeClient(cancelFinalize: Boolean = true) {
+    private fun disposeClient(cancelFinalize: Boolean = true, reason: String = "unspecified") {
+        android.util.Log.d("SonioxRealtime", "disposeClient(cancelFinalize=$cancelFinalize, reason=$reason) finalizeJobActive=${finalizeJob != null}")
         if (cancelFinalize) {
             finalizeJob?.cancel()
             finalizeJob = null
         }
         cancelAutoFinalize()
-        sttClient?.dispose()
+        sttClient?.dispose(reason)
         sttClient = null
     }
 
