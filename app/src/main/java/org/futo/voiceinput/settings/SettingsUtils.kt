@@ -48,8 +48,8 @@ import org.futo.voiceinput.settings.pages.ModelsScreen
 import org.futo.voiceinput.settings.pages.PaymentFailedScreen
 import org.futo.voiceinput.settings.pages.PaymentScreen
 import org.futo.voiceinput.settings.pages.PaymentThankYouScreen
-import org.futo.voiceinput.settings.pages.TestScreen
 import org.futo.voiceinput.settings.pages.SpeechProviderScreen
+import org.futo.voiceinput.settings.pages.TestScreen
 import org.futo.voiceinput.settings.pages.ThemeScreen
 
 

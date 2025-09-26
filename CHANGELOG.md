@@ -1,3 +1,9 @@
+# v1.3.7 (unreleased)
+* Smart Turn v3 (pipecat-ai) als neue VAD-Strategie integriert (Whisper & Soniox)
+* Einstellungen erlauben Auswahl zwischen Classic, Smart Turn und Hybrid
+* Smart Turn ONNX-Modell (`smart-turn-v3.0.onnx`) als App-Asset eingebunden
+* Soniox Async/Realtime auf neue Terminierungs-Strategie migriert
+
 # v1.3.6
 * Updated Google Play billing SDK to latest
 * Updated some other dependencies

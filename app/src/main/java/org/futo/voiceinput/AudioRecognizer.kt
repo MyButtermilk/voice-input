@@ -14,12 +14,8 @@ import android.media.MicrophoneDirection
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.LifecycleCoroutineScope
-import com.konovalov.vad.Vad
-import com.konovalov.vad.config.FrameSize
-import com.konovalov.vad.config.Mode
-import com.konovalov.vad.config.Model
-import com.konovalov.vad.config.SampleRate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -34,22 +30,25 @@ import org.futo.voiceinput.settings.DISALLOW_SYMBOLS
 import org.futo.voiceinput.settings.ENABLE_30S_LIMIT
 import org.futo.voiceinput.settings.ENABLE_MULTILINGUAL
 import org.futo.voiceinput.settings.ENGLISH_MODEL_INDEX
-import org.futo.voiceinput.settings.IS_VAD_ENABLED
 import org.futo.voiceinput.settings.LANGUAGE_TOGGLES
 import org.futo.voiceinput.settings.MULTILINGUAL_MODEL_INDEX
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.USE_LANGUAGE_SPECIFIC_MODELS
-import org.futo.voiceinput.settings.getSetting
-import org.futo.voiceinput.settings.VAD_SPEECH_MS
-import org.futo.voiceinput.settings.VAD_SILENCE_MS
-import org.futo.voiceinput.settings.VAD_END_SOON_MS
 import org.futo.voiceinput.settings.VAD_FINALIZE_MS
+import org.futo.voiceinput.settings.VAD_SILENCE_MS
+import org.futo.voiceinput.settings.VAD_SPEECH_MS
+import org.futo.voiceinput.settings.getSetting
+import org.futo.voiceinput.smartturn.MagnitudeUpdate
+import org.futo.voiceinput.smartturn.SpeechTerminationFactory
+import org.futo.voiceinput.smartturn.SpeechTerminationObserver
+import org.futo.voiceinput.smartturn.SpeechTerminationStrategy
+import org.futo.voiceinput.smartturn.SmartTurnConfig
+import org.futo.voiceinput.smartturn.TerminationSource
 import java.io.IOException
 import java.nio.FloatBuffer
-import java.nio.ShortBuffer
-import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
+import kotlin.math.min
 
 enum class MagnitudeState {
     NOT_TALKED_YET,
@@ -106,8 +105,10 @@ abstract class AudioRecognizer {
     protected abstract fun processing()
 
     private var isVADPaused = false
+    private var terminationStrategy: SpeechTerminationStrategy? = null
     fun pauseVAD(v: Boolean) {
         isVADPaused = v
+        terminationStrategy?.setPaused(v)
     }
 
     fun finishRecognizerIfRecording() {
@@ -361,26 +362,46 @@ abstract class AudioRecognizer {
 
                     val speechMs = context.getSetting(VAD_SPEECH_MS)
                     val silenceMs = context.getSetting(VAD_SILENCE_MS)
-                    val endSoonMs = context.getSetting(VAD_END_SOON_MS)
                     val finalizeMs = context.getSetting(VAD_FINALIZE_MS)
-                    fun msToFrames(ms: Int): Int = (ms + 29) / 30
-                    val endSoonFrames = msToFrames(endSoonMs)
-                    val finalizeFrames = msToFrames(finalizeMs)
 
-                    val vad = Vad.builder()
-                        .setModel(Model.WEB_RTC_GMM)
-                        .setMode(Mode.VERY_AGGRESSIVE)
-                        .setFrameSize(FrameSize.FRAME_SIZE_480)
-                        .setSampleRate(SampleRate.SAMPLE_RATE_16K)
-                        .setSpeechDurationMs(speechMs)
-                        .setSilenceDurationMs(silenceMs)
-                        .build()
+                    val smartConfig = SmartTurnConfig(
+                        minSpeechMillis = speechMs.toLong().coerceAtLeast(200L),
+                        silenceHoldMillis = silenceMs.toLong().coerceAtLeast(200L),
+                        finalizeDelayMillis = finalizeMs.toLong().coerceAtLeast(250L)
+                    )
+                    val observer = object : SpeechTerminationObserver {
+                        override fun onMagnitude(update: MagnitudeUpdate) {
+                            if (isVADPaused) return
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                if (isRecording) {
+                                    updateMagnitude(update.magnitude, update.state)
+                                }
+                            }
+                        }
 
-                    val shouldUseVad = context.getSetting(IS_VAD_ENABLED)
-                    
-                    val vadSampleBuffer = ShortBuffer.allocate(480)
-                    var numConsecutiveNonSpeech = 0
-                    var numConsecutiveSpeech = 0
+                        override fun onEndingSoon(source: TerminationSource) {
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                if (isRecording) {
+                                    updateMagnitude(1.0f, MagnitudeState.ENDING_SOON_VAD)
+                                }
+                            }
+                        }
+
+                        override fun onFinalize(source: TerminationSource) {
+                            Log.d("SmartTurnObserver", "Finalize from $source (isRecording=$isRecording)")
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                if (isRecording) {
+                                    finishRecognizer()
+                                }
+                            }
+                        }
+                    }
+
+                    terminationStrategy = SpeechTerminationFactory.createStrategy(
+                        contextProvider = { context },
+                        config = smartConfig,
+                        observer = observer
+                    ).also { it.setPaused(isVADPaused) }
 
                     val samples = ShortArray(1600)
 
@@ -393,105 +414,66 @@ abstract class AudioRecognizer {
 
                         if(!isRecording || recorder!!.recordingState != AudioRecord.RECORDSTATE_RECORDING) break
 
+                        terminationStrategy?.onShortFrame(samples, nRead)
+
                         if(floatSamples.remaining() < 1600 && !expandSpaceIfAllowed()) {
                             withContext(Dispatchers.Main){ finishRecognizer() }
                             break
                         }
 
-                        // Run VAD
-                        if(shouldUseVad && !isVADPaused) {
-                            var remainingSamples = nRead
-                            var offset = 0
-                            while(remainingSamples > 0) {
-                                if(!vadSampleBuffer.hasRemaining()) {
-                                    val isSpeech = vad.isSpeech(vadSampleBuffer.array())
-                                    vadSampleBuffer.clear()
-                                    vadSampleBuffer.rewind()
+                        val floatChunk = FloatArray(nRead)
+                        for (i in 0 until nRead) {
+                            floatChunk[i] = samples[i].toFloat() / Short.MAX_VALUE.toFloat()
+                        }
+                        floatSamples.put(floatChunk)
 
-                                    if(!isSpeech) {
-                                        numConsecutiveNonSpeech++
-                                        numConsecutiveSpeech = 0
-                                    } else {
-                                        numConsecutiveNonSpeech = 0
-                                        numConsecutiveSpeech++
-                                    }
-                                }
-
-                                val samplesToRead = min(min(remainingSamples, 480), vadSampleBuffer.remaining())
-                                for(i in 0 until samplesToRead) {
-                                    vadSampleBuffer.put(samples[offset])
-                                    offset += 1
-                                    remainingSamples -= 1
-                                }
-                            }
-                        } else {
-                            numConsecutiveNonSpeech = 0
+                        val startSoundPassed = (floatSamples.position() > 16000 * 0.6)
+                        if (!startSoundPassed) {
+                            terminationStrategy?.reset()
                         }
 
-                        floatSamples.put(samples.sliceArray(0 until nRead).map { it.toFloat() / Short.MAX_VALUE.toFloat() }.toFloatArray())
-
-                        // Don't set hasTalked if the start sound may still be playing, otherwise on some
-                        // devices the rms just explodes and `hasTalked` is always true
-                        val startSoundPassed = (floatSamples.position() > 16000*0.6)
-                        if(!startSoundPassed){
-                            numConsecutiveSpeech = 0
-                            numConsecutiveNonSpeech = 0
+                        val rms = sqrt(floatChunk.sumOf { (it * it).toDouble() } / floatChunk.size).toFloat()
+                        if (startSoundPassed && rms > 0.01f) {
+                            hasTalked = true
                         }
-
-                        val rms = sqrt(samples.sumOf { ((it.toFloat() / Short.MAX_VALUE.toFloat()).pow(2)).toDouble() } / samples.size).toFloat()
-
-                        if(startSoundPassed && ((rms > 0.01) || (numConsecutiveSpeech > 8))) hasTalked = true
-
-                        if(rms > 0.0001){
+                        if (rms > 0.0001f) {
                             anyNoiseAtAll = true
                             isMicBlocked = false
                         }
-
-                        // Check if mic is blocked
-                        if(!anyNoiseAtAll && canMicBeBlocked && (floatSamples.position() > 2*16000)){
+                        if (!anyNoiseAtAll && canMicBeBlocked && floatSamples.position() > 2 * 16000) {
                             isMicBlocked = true
                         }
-
-                        // End if VAD hasn't detected speech in a while
-                        if(shouldUseVad && hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
-                            withContext(Dispatchers.Main){ finishRecognizer() }
-                            break
-                        }
-
                         val magnitude = (1.0f - 0.1f.pow(24.0f * rms))
-
-                        val state = if (!canExpandSpace && floatSamples.remaining() < (16000 * 5)) {
-                            MagnitudeState.ENDING_SOON_30S
-                        } else if(hasTalked && shouldUseVad && (numConsecutiveNonSpeech > endSoonFrames)) {
-                            MagnitudeState.ENDING_SOON_VAD
-                        } else if(hasTalked) {
-                            MagnitudeState.TALKING
-                        } else if(isMicBlocked) {
-                            MagnitudeState.MIC_MAY_BE_BLOCKED
-                        } else {
-                            MagnitudeState.NOT_TALKED_YET
+                        val state = when {
+                            !canExpandSpace && floatSamples.remaining() < (16000 * 5) -> MagnitudeState.ENDING_SOON_30S
+                            hasTalked -> MagnitudeState.TALKING
+                            isMicBlocked -> MagnitudeState.MIC_MAY_BE_BLOCKED
+                            else -> MagnitudeState.NOT_TALKED_YET
                         }
-
-                        yield()
                         withContext(Dispatchers.Main) {
-                            yield()
-                            if(isRecording) {
+                            if (isRecording) {
                                 updateMagnitude(magnitude, state)
                             }
                         }
 
-                        // Skip ahead as much as possible, in case we are behind (taking more than
-                        // 100ms to process 100ms)
+                        terminationStrategy?.onFloatFrame(floatChunk, floatChunk.size)
+
                         while(true){
                             yield()
                             val nRead2 = recorder!!.read(samples, 0, 1600, AudioRecord.READ_NON_BLOCKING)
                             if(nRead2 > 0) {
+                                terminationStrategy?.onShortFrame(samples, nRead2)
                                 if(floatSamples.remaining() < nRead2 && !expandSpaceIfAllowed()){
                                     yield()
                                     withContext(Dispatchers.Main){ finishRecognizer() }
                                     break
                                 }
-                                floatSamples.put(samples.sliceArray(0 until nRead2).map { it.toFloat() / Short.MAX_VALUE.toFloat() }.toFloatArray())
+                                val floatChunk2 = FloatArray(nRead2)
+                                for (i in 0 until nRead2) {
+                                    floatChunk2[i] = samples[i].toFloat() / Short.MAX_VALUE.toFloat()
+                                }
+                                floatSamples.put(floatChunk2)
+                                terminationStrategy?.onFloatFrame(floatChunk2, floatChunk2.size)
                             } else {
                                 break
                             }

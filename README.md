@@ -116,7 +116,12 @@ Key options available in Settings → Speech:
 - Soniox mode: "Async" or "Realtime"
 - Soniox API key: required for Soniox usage
 - Languages: toggle supported languages and optional personal dictionary
+- VAD strategy: choose `Classic VAD`, `Smart Turn v3` (default) or `Hybrid`
 - VAD & UX: sound effects, animations, verbose progress, and auto-stop thresholds
+
+### Smart Turn v3
+
+Smart Turn v3 ist ein von [pipecat-ai](https://huggingface.co/pipecat-ai/smart-turn-v3) bereitgestelltes, BSD-2-Clause-lizenziertes Endpunkt-Erkennungsmodell. Die ONNX-Gewichte (`smart-turn-v3.0.onnx`) liegen unter `app/src/main/assets/`. Die Integration ermöglicht eine genauere Erkennung von Sprachenden sowohl für den lokalen Whisper-Recognizer als auch die Soniox-Provider. Weitere Informationen findest du im [Smart Turn Repository](https://github.com/pipecat-ai/smart-turn) und im [Daily.co Blogpost](https://www.daily.co/blog/announcing-smart-turn-v3-with-cpu-inference-in-just-12ms/).
 
 Some prebuilt binaries are included in the `libs` directory to make the build faster, there are also instructions to build them yourself.
 

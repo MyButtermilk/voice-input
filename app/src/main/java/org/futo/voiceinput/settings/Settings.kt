@@ -134,7 +134,6 @@ val EXT_LICENSE_KEY = SettingsKey(stringPreferencesKey("license_key"), "")
 val EXT_PENDING_PURCHASE_ID = SettingsKey(stringPreferencesKey("purchase_id"), "")
 val EXT_PENDING_PURCHASE_LAST_CHECK = SettingsKey(longPreferencesKey("purchase_status_last_check"), 0)
 
-val IS_VAD_ENABLED = SettingsKey(booleanPreferencesKey("enable_vad"), true)
 val USE_LANGUAGE_SPECIFIC_MODELS = SettingsKey(booleanPreferencesKey("USE_LANGUAGE_SPECIFIC_MODELS"), true)
 
 val ALLOW_UNDERTRAINED_LANGUAGES = SettingsKey(booleanPreferencesKey("allow_undertrained_languages"), false)
@@ -160,5 +159,5 @@ val SONIOX_CONTEXT_VOCAB = SettingsKey(stringPreferencesKey("soniox_context_voca
 // VAD thresholds (milliseconds)
 val VAD_SPEECH_MS = SettingsKey(intPreferencesKey("vad_speech_ms"), 150)
 val VAD_SILENCE_MS = SettingsKey(intPreferencesKey("vad_silence_ms"), 300)
-val VAD_END_SOON_MS = SettingsKey(intPreferencesKey("vad_end_soon_ms"), 1000)
 val VAD_FINALIZE_MS = SettingsKey(intPreferencesKey("vad_finalize_ms"), 2000)
+

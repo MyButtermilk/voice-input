@@ -10,11 +10,6 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.lifecycle.LifecycleCoroutineScope
-import com.konovalov.vad.Vad
-import com.konovalov.vad.config.FrameSize
-import com.konovalov.vad.config.Mode
-import com.konovalov.vad.config.Model
-import com.konovalov.vad.config.SampleRate
 import kotlinx.coroutines.*
 import android.widget.Toast
 import okhttp3.*
@@ -26,16 +21,20 @@ import org.futo.voiceinput.MagnitudeState
 import org.futo.voiceinput.ml.RunState
 import org.futo.voiceinput.recognizer.RecognizerControl
 import org.futo.voiceinput.recognizer.RecognizerUiCallbacks
-import org.futo.voiceinput.settings.IS_VAD_ENABLED
 import org.futo.voiceinput.settings.LANGUAGE_TOGGLES
 import org.futo.voiceinput.settings.PERSONAL_DICTIONARY
 import org.futo.voiceinput.settings.SONIOX_API_KEY
 import org.futo.voiceinput.settings.SONIOX_CONTEXT_VOCAB
-import org.futo.voiceinput.settings.getSetting
-import org.futo.voiceinput.settings.VAD_SPEECH_MS
-import org.futo.voiceinput.settings.VAD_SILENCE_MS
-import org.futo.voiceinput.settings.VAD_END_SOON_MS
 import org.futo.voiceinput.settings.VAD_FINALIZE_MS
+import org.futo.voiceinput.settings.VAD_SILENCE_MS
+import org.futo.voiceinput.settings.VAD_SPEECH_MS
+import org.futo.voiceinput.settings.getSetting
+import org.futo.voiceinput.smartturn.MagnitudeUpdate
+import org.futo.voiceinput.smartturn.SpeechTerminationFactory
+import org.futo.voiceinput.smartturn.SpeechTerminationObserver
+import org.futo.voiceinput.smartturn.SpeechTerminationStrategy
+import org.futo.voiceinput.smartturn.SmartTurnConfig
+import org.futo.voiceinput.smartturn.TerminationSource
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.FloatBuffer
@@ -58,6 +57,7 @@ class SonioxAsyncRecognizer(
     private var focusRequest: AudioFocusRequest? = null
     private var forcedLanguage: String? = null
     private var isVADPaused = false
+    private var terminationStrategy: SpeechTerminationStrategy? = null
 
     override fun isCurrentlyRecording(): Boolean = isRecording
 
@@ -72,6 +72,7 @@ class SonioxAsyncRecognizer(
         isRecording = false
         floatSamples.clear()
         unfocusAudio()
+        terminationStrategy = null
     }
 
     override fun create() {
@@ -98,6 +99,7 @@ class SonioxAsyncRecognizer(
 
     override fun pauseVAD(v: Boolean) {
         isVADPaused = v
+        terminationStrategy?.setPaused(v)
     }
 
     override fun forceLanguage(lang: String?) {
@@ -194,26 +196,34 @@ class SonioxAsyncRecognizer(
 
                 val speechMs = context.getSetting(VAD_SPEECH_MS)
                 val silenceMs = context.getSetting(VAD_SILENCE_MS)
-                val endSoonMs = context.getSetting(VAD_END_SOON_MS)
                 val finalizeMs = context.getSetting(VAD_FINALIZE_MS)
-                fun msToFrames(ms: Int): Int = (ms + 29) / 30
-                val endSoonFrames = msToFrames(endSoonMs)
-                val finalizeFrames = msToFrames(finalizeMs)
+                val strategy = SpeechTerminationFactory.createStrategy(
+                    contextProvider = { context },
+                    config = SmartTurnConfig(
+                        minSpeechMillis = speechMs.toLong().coerceAtLeast(200L),
+                        silenceHoldMillis = silenceMs.toLong().coerceAtLeast(200L),
+                        finalizeDelayMillis = finalizeMs.toLong().coerceAtLeast(250L)
+                    ),
+                    observer = object : SpeechTerminationObserver {
+                        override fun onMagnitude(update: MagnitudeUpdate) {
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                ui.onUpdateMagnitude(update.magnitude, update.state)
+                            }
+                        }
 
-                val vad = Vad.builder()
-                    .setModel(Model.WEB_RTC_GMM)
-                    .setMode(Mode.VERY_AGGRESSIVE)
-                    .setFrameSize(FrameSize.FRAME_SIZE_480)
-                    .setSampleRate(SampleRate.SAMPLE_RATE_16K)
-                    .setSpeechDurationMs(speechMs)
-                    .setSilenceDurationMs(silenceMs)
-                    .build()
+                        override fun onEndingSoon(source: TerminationSource) {
+                            // no-op; onMagnitude already updates state
+                        }
 
-                val shouldUseVad = context.getSetting(IS_VAD_ENABLED)
-
-                val vadSampleBuffer = ShortBuffer.allocate(480)
-                var numConsecutiveNonSpeech = 0
-                var numConsecutiveSpeech = 0
+                        override fun onFinalize(source: TerminationSource) {
+                            android.util.Log.d("SonioxAsync", "Finalize from $source (isRecording=$isRecording)")
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                finish()
+                            }
+                        }
+                    }
+                )
+                terminationStrategy = strategy.also { it.setPaused(isVADPaused) }
 
                 val samples = ShortArray(1600)
 
@@ -226,68 +236,51 @@ class SonioxAsyncRecognizer(
 
                     if (!isRecording || recorder!!.recordingState != AudioRecord.RECORDSTATE_RECORDING) break
 
+                    terminationStrategy?.onShortFrame(samples, nRead)
+
                     if (floatSamples.remaining() < 1600) {
                         // stop if exceeded buffer (~30s)
                         withContext(Dispatchers.Main) { finish() }
                         break
                     }
 
-                    if (shouldUseVad && !isVADPaused) {
-                        var remainingSamples = nRead
-                        var offset = 0
-                        while (remainingSamples > 0) {
-                            if (!vadSampleBuffer.hasRemaining()) {
-                                val isSpeech = vad.isSpeech(vadSampleBuffer.array())
-                                vadSampleBuffer.clear(); vadSampleBuffer.rewind()
-                                if (!isSpeech) { numConsecutiveNonSpeech++; numConsecutiveSpeech = 0 }
-                                else { numConsecutiveNonSpeech = 0; numConsecutiveSpeech++ }
-                            }
-                            val samplesToRead = min(min(remainingSamples, 480), vadSampleBuffer.remaining())
-                            for (i in 0 until samplesToRead) {
-                                vadSampleBuffer.put(samples[offset]); offset += 1; remainingSamples -= 1
-                            }
-                        }
-                    } else {
-                        numConsecutiveNonSpeech = 0
+                    val floatChunk = FloatArray(nRead)
+                    for (i in 0 until nRead) {
+                        floatChunk[i] = samples[i].toFloat() / Short.MAX_VALUE.toFloat()
                     }
-
-                    floatSamples.put(samples.sliceArray(0 until nRead).map { it.toFloat() / Short.MAX_VALUE.toFloat() }.toFloatArray())
+                    floatSamples.put(floatChunk)
+                    terminationStrategy?.onFloatFrame(floatChunk, floatChunk.size)
 
                     val startSoundPassed = (floatSamples.position() > 16000 * 0.6)
-                    if (!startSoundPassed) { numConsecutiveSpeech = 0; numConsecutiveNonSpeech = 0 }
+                    if (!startSoundPassed) {
+                        terminationStrategy?.reset()
+                        hasTalked = false
+                    }
 
                     val rms = sqrt(samples.sumOf { ((it.toFloat() / Short.MAX_VALUE.toFloat()).pow(2)).toDouble() } / samples.size).toFloat()
                     if (startSoundPassed && (rms > 0.0001f)) anyNoiseAtAll = true
                     isMicBlocked = (!anyNoiseAtAll) && canMicBeBlocked
-                    if (startSoundPassed && ((rms > 0.01) || (numConsecutiveSpeech > 8))) hasTalked = true
+                    if (startSoundPassed && (rms > 0.01f)) hasTalked = true
 
                     val magnitude = (1.0f - 0.1f.pow(24.0f * rms))
-                    val state = if (hasTalked && shouldUseVad && (numConsecutiveNonSpeech > endSoonFrames)) {
-                        MagnitudeState.ENDING_SOON_VAD
-                    } else if (hasTalked) {
-                        MagnitudeState.TALKING
-                    } else if (isMicBlocked) {
-                        MagnitudeState.MIC_MAY_BE_BLOCKED
-                    } else {
-                        MagnitudeState.NOT_TALKED_YET
-                    }
+                    val state = if (hasTalked) MagnitudeState.TALKING else MagnitudeState.NOT_TALKED_YET
                     withContext(Dispatchers.Main) { ui.onUpdateMagnitude(magnitude, state) }
-
-                    // Auto-finalize with VAD when silent long enough
-                    if (shouldUseVad && hasTalked && (numConsecutiveNonSpeech > finalizeFrames)) {
-                        withContext(Dispatchers.Main) { finish() }
-                        break
-                    }
 
                     // drain non-blocking reads
                     while (true) {
                         val nRead2 = recorder!!.read(samples, 0, 1600, AudioRecord.READ_NON_BLOCKING)
                         if (nRead2 > 0) {
+                            terminationStrategy?.onShortFrame(samples, nRead2)
                             if (floatSamples.remaining() < nRead2) {
                                 withContext(Dispatchers.Main) { finish() }
                                 break
                             }
-                            floatSamples.put(samples.sliceArray(0 until nRead2).map { it.toFloat() / Short.MAX_VALUE.toFloat() }.toFloatArray())
+                            val floatChunk2 = FloatArray(nRead2)
+                        for (i in 0 until nRead2) {
+                            floatChunk2[i] = samples[i].toFloat() / Short.MAX_VALUE.toFloat()
+                        }
+                        floatSamples.put(floatChunk2)
+                        terminationStrategy?.onFloatFrame(floatChunk2, floatChunk2.size)
                         } else break
                     }
                 }
@@ -302,6 +295,7 @@ class SonioxAsyncRecognizer(
         recorder?.stop()
         unfocusAudio()
         ui.onProcessing()
+        terminationStrategy = null
         lifecycleScope.launch {
             withContext(Dispatchers.IO) { runSoniox() }
         }

@@ -163,6 +163,7 @@
     <string name="input_options">Input</string>
     <string name="stop_on_silence">Automatically stop on silence</string>
     <string name="stop_on_silence_info">If you speak with pauses, you may wish to disable the option below. You can also pause automatic stopping temporarily by tapping and holding.</string>
+    <string name="vad_strategy_info">Smart Turn v3 now pairs with Silero VAD to detect when you finish speaking automatically.</string>
     <string name="use_language_specific_models">Use language-specific models</string>
     <string name="use_language_specific_models_info">Language-specific models may be more accurate, but take extra time to switch after detecting the language. Currently only has effect with English.</string>
     <string name="ending_soon_30s">Ending soon - 30s limit</string>
@@ -226,8 +227,7 @@
     <string name="soniox_mode_label">Soniox Mode</string>
     <string name="provider_soniox_async">Async (Upload &amp; Transcribe)</string>
     <string name="provider_soniox_realtime">Realtime (Streaming)</string>
-    <string name="vad_speech_ms_label">VAD speech duration (ms)</string>
-    <string name="vad_silence_ms_label">VAD silence duration (ms)</string>
-    <string name="vad_end_soon_ms_label">VAD ending-soon after (ms)</string>
-    <string name="vad_finalize_ms_label">VAD finalize after silence (ms)</string>
+    <string name="vad_speech_ms_label">Minimum speech duration (ms)</string>
+    <string name="vad_silence_ms_label">Required silence before evaluation (ms)</string>
+    <string name="vad_finalize_ms_label">Extra delay before finalizing (ms)</string>
 </resources>

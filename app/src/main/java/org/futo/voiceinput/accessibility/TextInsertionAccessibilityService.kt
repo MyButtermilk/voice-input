@@ -11,6 +11,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Locale
 
 class TextInsertionAccessibilityService : AccessibilityService() {
     companion object {
@@ -162,17 +163,24 @@ class TextInsertionAccessibilityService : AccessibilityService() {
             return SetTextOutcome.NotSupported
         }
 
-        val before = (node.text ?: "").toString()
+        val beforeRaw = (node.text ?: "").toString()
+
         if (text.isEmpty()) {
-            Log.d(TAG, "performSetText: nothing to insert")
-            return SetTextOutcome.Success
-        }
-        if (before.endsWith(text)) {
-            Log.d(TAG, "performSetText: already contains expected suffix")
             return SetTextOutcome.Success
         }
 
-        val newText = before + text
+        val trimmedBefore = beforeRaw.trim()
+        val shouldReplace = trimmedBefore.isEmpty() || looksLikePlaceholder(trimmedBefore)
+        if (!shouldReplace && beforeRaw.endsWith(text)) {
+            return SetTextOutcome.Success
+        }
+
+        val newText = if (shouldReplace) {
+            text
+        } else {
+            combineText(beforeRaw, text)
+        }
+
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
         }
@@ -185,14 +193,17 @@ class TextInsertionAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
             node.refresh()
         }
-        val after = (node.text ?: "").toString()
-        Log.d(TAG, "performSetText before='$before' after='$after'")
-        return if (after.endsWith(text)) {
+        val afterRaw = (node.text ?: "").toString()
+        return if (afterRaw == newText) {
             SetTextOutcome.Success
         } else {
             SetTextOutcome.AppliedNeedsRetry
         }
     }
+
+
+
+
 
     private enum class SetTextOutcome {
         NotSupported,
@@ -233,6 +244,58 @@ class TextInsertionAccessibilityService : AccessibilityService() {
             pkg.startsWith("org.futo.voiceinput")
         } catch (_: Throwable) { false }
     }
+
+    private fun combineText(existing: String, addition: String): String {
+        if (existing.isEmpty()) return addition
+        val needsSpace = !existing.last().isWhitespace() && addition.isNotEmpty() && !addition.first().isWhitespace()
+        return if (needsSpace) existing + " " + addition else existing + addition
+    }
+
+    private fun looksLikePlaceholder(text: CharSequence?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val normalized = text.toString()
+            .replace("\u00A0", " ")
+            .replace("\u202F", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimEnd('.', '\u2026', ':')
+            .trim()
+            .lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        val placeholders = setOf(
+            "nachricht",
+            "nachricht verfassen",
+            "nachricht schreiben",
+            "message",
+            "type a message",
+            "write a message",
+            "schreibe eine nachricht"
+        )
+        return normalized in placeholders
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+
+
 
 

@@ -1,3 +1,7 @@
 [submodule "dep/futopay"]
 	path = dep/futopay
 	url = https://gitlab.futo.org/alex/futopayclientlibraries.git
+[submodule "dep/smart-turn"]
+	path = dep/smart-turn
+	url = https://github.com/pipecat-ai/smart-turn
+	branch = main

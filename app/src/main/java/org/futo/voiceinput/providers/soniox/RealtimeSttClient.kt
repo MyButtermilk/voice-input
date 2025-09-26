@@ -469,10 +469,10 @@ class SonioxRealtimeClient(
 
     private fun emitFinal(text: String) {
         finalListeners.forEach { listener -> listener(text) }
-        if (awaitingSessionFinal && !finalDeferred.isCompleted) {
+        if (!finalDeferred.isCompleted) {
             finalDeferred.complete(text)
-            awaitingSessionFinal = false
         }
+        awaitingSessionFinal = false
     }
 
     private fun emitError(message: String) {

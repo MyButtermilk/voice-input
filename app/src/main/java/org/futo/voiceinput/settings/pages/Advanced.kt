@@ -39,7 +39,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import org.futo.voiceinput.settings.VAD_SPEECH_MS
 import org.futo.voiceinput.settings.VAD_SILENCE_MS
-import org.futo.voiceinput.settings.VAD_END_SOON_MS
 import org.futo.voiceinput.settings.VAD_FINALIZE_MS
 
 @Composable
@@ -97,7 +96,6 @@ fun AdvancedScreen(
         // VAD thresholds
         val speech = useDataStore(VAD_SPEECH_MS)
         val silence = useDataStore(VAD_SILENCE_MS)
-        val endSoon = useDataStore(VAD_END_SOON_MS)
         val finalize = useDataStore(VAD_FINALIZE_MS)
 
         VADNumberField(
@@ -108,10 +106,6 @@ fun AdvancedScreen(
             label = stringResource(R.string.vad_silence_ms_label),
             initial = silence.value.toString()
         ) { v -> v.toIntOrNull()?.let { silence.setValue(it) } }
-        VADNumberField(
-            label = stringResource(R.string.vad_end_soon_ms_label),
-            initial = endSoon.value.toString()
-        ) { v -> v.toIntOrNull()?.let { endSoon.setValue(it) } }
         VADNumberField(
             label = stringResource(R.string.vad_finalize_ms_label),
             initial = finalize.value.toString()

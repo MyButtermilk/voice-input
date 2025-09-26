@@ -72,8 +72,11 @@ import org.futo.voiceinput.accessibility.TextInsertionAccessibilityService
 import org.futo.voiceinput.ui.BeautifulRecordingUI
 import org.futo.voiceinput.theme.UixThemeAuto
 import org.futo.voiceinput.updates.scheduleUpdateCheckingJob
+import java.util.Locale
 
 val SupportsNavbarExtension = Build.VERSION.SDK_INT >= 28
+
+private const val PLACEHOLDER_MAX_CHARS = 128
 
 @Composable
 fun navBarHeight(): Dp = with(LocalDensity.current) {
@@ -265,11 +268,14 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
             }
 
             if (computedResult.isBlank()) {
+                Log.d("VIIME", "computedResult blank, cancelling")
                 switchBackAfterResult()
                 return
             }
 
+            Log.d("VIIME", "attempt commit to current connection=" + (connection!=null) + " text='" + computedResult + "'")
             if (connection != null && commitToConnection(connection, computedResult)) {
+                Log.d("VIIME", "commit to current succeeded")
                 switchBackAfterResult()
                 return
             }
@@ -511,24 +517,112 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     private fun InputConnection.commitFinalText(text: CharSequence): Boolean {
         return try {
             beginBatchEdit()
-            // Replace any composing (non-final) text with the final text
-            // Clearing composing first prevents duplicates on commit
+            removePlaceholderIfPresent()
             setComposingText("", 1)
             commitText(text, 1)
-            // Ensure no composing remains active
             finishComposingText()
             true
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.e("VIIME", "commitFinalText failed", t)
             false
         } finally {
             try {
                 endBatchEdit()
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                Log.w("VIIME", "commitFinalText endBatchEdit failed", t)
             }
         }
     }
 
+
+    private fun InputConnection.removePlaceholderIfPresent(): Boolean {
+        val before = runCatching { getTextBeforeCursor(PLACEHOLDER_MAX_CHARS, 0) }.getOrNull()?.toString()
+        val after = runCatching { getTextAfterCursor(PLACEHOLDER_MAX_CHARS, 0) }.getOrNull()?.toString()
+        val selected = runCatching { getSelectedText(0) }.getOrNull()?.toString()
+
+        fun clear(beforeCount: Int, afterCount: Int): Boolean {
+            val result = runCatching {
+                setComposingText("", 1)
+                deleteSurroundingText(beforeCount.coerceAtLeast(0), afterCount.coerceAtLeast(0))
+            }.getOrElse { false }
+            runCatching { finishComposingText() }
+            return result
+        }
+
+        if (!selected.isNullOrBlank() && looksLikePlaceholder(selected)) {
+            return clear(selected.length, 0)
+        }
+
+        val beforeNonNull = before?.takeIf { it.isNotBlank() }
+        val afterNonNull = after?.takeIf { it.isNotBlank() }
+
+        if (beforeNonNull != null && afterNonNull == null && looksLikePlaceholder(beforeNonNull)) {
+            return clear(beforeNonNull.length, 0)
+        }
+
+        if (afterNonNull != null && beforeNonNull == null && looksLikePlaceholder(afterNonNull)) {
+            return clear(0, afterNonNull.length)
+        }
+
+        val combined = when {
+            beforeNonNull != null && afterNonNull != null -> beforeNonNull + afterNonNull
+            beforeNonNull != null -> beforeNonNull
+            afterNonNull != null -> afterNonNull
+            else -> null
+        }
+
+        if (!combined.isNullOrBlank() && looksLikePlaceholder(combined)) {
+            val beforeCount = beforeNonNull?.length ?: 0
+            val afterCount = afterNonNull?.length ?: 0
+            return clear(beforeCount, afterCount)
+        }
+
+        return false
+    }
+
+
+
+
+    private fun looksLikePlaceholder(text: CharSequence?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val normalized = text.toString()
+            .replace("\u00A0", " ")
+            .replace("\u202F", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimEnd('.', '\u2026', ':')
+            .trim()
+            .lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        val placeholders = setOf(
+            "nachricht",
+            "nachricht verfassen",
+            "nachricht schreiben",
+            "message",
+            "type a message",
+            "write a message",
+            "schreibe eine nachricht"
+        )
+        return normalized in placeholders
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+
 
 
 
