@@ -40,5 +40,13 @@
 ## Soniox Realtime Notes
 - Realtime client sanitizes Soniox control markers (`<fin>`, `<end>`) before emitting partial/final text, preventing stray tokens in transcripts.
 - `<fin>` messages now trigger immediate `finalizeSession`, which closes the websocket early instead of waiting for server timeouts.
+- Final transcript insertion policy (duplicate-proof):
+  - Only the Accessibility Service is used to insert the final text (IME direct commit and clipboard fallback are disabled).
+  - In `RecognizeActivity`, when the Accessibility Service is active, the app suppresses the `Intent` result (`setResult(RESULT_CANCELED)`), preventing callers from also inserting the same text. If the service is inactive, the legacy `Intent` result is returned.
+  - The Accessibility Service captures the original target (package/view/window) and cancels if focus moves to a different app before confirmation, avoiding cross‑app insertion.
+  - A minimal duplicate guard prevents re‑inserting the exact same text again within the same session.
+- IME commit via accessibility: Accessibility retries cancel their pending runnable after success so later focus changes do not reinsert text.
+- Accessibility retries capture the originating package/view id/window and abort remaining attempts if focus moves, preventing duplicate pastes when users change focus after final insertion.
+- Clipboard paste fallback is disabled; if ACTION_SET_TEXT fails we log the reason and stop instead of touching the system clipboard.
 - `stopAndFinalize()` still sends trailing silence and the finalize control frame; on-device logging (`adb logcat -s SRT SonioxRealtime SmartTurnEngine`) should show `processTokenPayload: encountered <fin>` followed by `finalizeSession start...` when the marker arrives.
-- Always reinstall after modifying Soniox code (`./gradlew installDevDebug`) so the updated sanitizers take effect on-device.
+- Always reinstall after modifying Soniox or accessibility code (`./gradlew installDevDebug`) so the updated logic takes effect on-device.

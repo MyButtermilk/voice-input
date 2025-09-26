@@ -200,11 +200,23 @@ class RecognizeActivity : ComponentActivity() {
     }
 
     private fun sendResult(result: String) {
-        Log.d("RecognizeActivity", "sendResult len=${result.length}")
-        if (TextInsertionAccessibilityService.isActive()) {
-            TextInsertionAccessibilityService.requestInsert(result, delayMs = 150L)
+        // Always try to use accessibility service for insertion
+        val accessibilityActive = TextInsertionAccessibilityService.isActive()
+        
+        if (accessibilityActive) {
+            TextInsertionAccessibilityService.requestInsert(result, delayMs = 0L) // No delay for Intent mode
+
+            // Suppress Intent result to avoid duplicate insertion by the caller app
+            setResult(RESULT_CANCELED)
+            finish()
+            return
         } else {
-            Log.d("RecognizeActivity", "accessibility service inactive; relying on caller")
+            // Show a toast to the user
+            android.widget.Toast.makeText(
+                this,
+                "Please enable FUTO Voice Input accessibility service",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
         }
 
         val returnIntent = Intent()

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.util.Log
@@ -250,6 +251,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         var prevText: CharSequence? = null
         var nextText: CharSequence? = null
         override fun decodingStarted() {
+            lastDirectCommitText = null
+            lastDirectCommitAt = 0L
+            TextInsertionAccessibilityService.clearRecentSuccess()
             this@VoiceInputMethodService.currentInputConnection?.let { connection ->
                 prevText = connection.getTextBeforeCursor(1, 0)
                 nextText = connection.getTextAfterCursor(1, 0)
@@ -258,8 +262,6 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         }
 
         override fun sendResult(result: String) {
-            val connection = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
-            Log.d("VIIME", "sendResult: curr=" + (this@VoiceInputMethodService.currentInputConnection!=null) + " last=" + (lastInputConnection!=null))
             val computedResult = if (result.isNotBlank() && !prevText.isNullOrBlank() && punctuationChars.contains(prevText?.last())) {
                 val trimmed = result.trimStart()
                 if (trimmed.isEmpty()) " " else " " + trimmed
@@ -268,44 +270,26 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
             }
 
             if (computedResult.isBlank()) {
-                Log.d("VIIME", "computedResult blank, cancelling")
                 switchBackAfterResult()
                 return
             }
 
-            Log.d("VIIME", "attempt commit to current connection=" + (connection!=null) + " text='" + computedResult + "'")
-            if (connection != null && commitToConnection(connection, computedResult)) {
-                Log.d("VIIME", "commit to current succeeded")
-                switchBackAfterResult()
-                return
-            }
-
-            pendingCommitText.value = computedResult
+            // Cancel any pending commits
+            pendingCommitText.value = null
             deferredCommitJob?.cancel()
-            deferredCommitJob = this@VoiceInputMethodService.lifecycle.coroutineScope.launch {
-                requestShowSelf(0)
-                var committed = waitForConnectionAndCommit(computedResult)
-                if (!committed) {
-                    committed = lastInputConnection?.let { commitToConnection(it, computedResult) } ?: false
-                }
-                if (!committed) {
-                    val accessibilityActive = TextInsertionAccessibilityService.isActive()
-                    Log.w("VIIME", "commit failed; accessibilityActive=${'$'}accessibilityActive")
-                    if (accessibilityActive) {
-                        TextInsertionAccessibilityService.requestInsert(computedResult)
-                    } else {
-                        try {
-                            Log.w("VIIME", "Falling back to clipboard")
-                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("voice input", computedResult))
-                            android.widget.Toast.makeText(this@VoiceInputMethodService, getString(R.string.copied_to_clipboard), android.widget.Toast.LENGTH_SHORT).show()
-                        } catch (t: Throwable) {
-                            Log.e("VIIME", "Clipboard fallback failed", t)
-                        }
-                    }
-                }
-                switchBackAfterResult()
+
+            // Use ONLY accessibility service
+            val accessibilityActive = TextInsertionAccessibilityService.isActive()
+            if (accessibilityActive) {
+                TextInsertionAccessibilityService.requestInsert(computedResult, delayMs = 50L)
+            } else {
+                android.widget.Toast.makeText(
+                    this@VoiceInputMethodService,
+                    getString(R.string.accessibility_required),
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
+            switchBackAfterResult()
         }
 
         private var partialDeferredJob: kotlinx.coroutines.Job? = null
@@ -407,6 +391,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     private val pendingCommitText: MutableState<String?> = mutableStateOf(null)
     private var lastInputConnection: InputConnection? = null
     private var deferredCommitJob: Job? = null
+    private val duplicateCommitWindowMs = 5000L
+    private var lastDirectCommitText: String? = null
+    private var lastDirectCommitAt: Long = 0L
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
 
@@ -622,6 +609,11 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
 
 
 }
+
+
+
+
+
 
 
 

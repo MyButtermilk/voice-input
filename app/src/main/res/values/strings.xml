@@ -230,4 +230,5 @@
     <string name="vad_speech_ms_label">Minimum speech duration (ms)</string>
     <string name="vad_silence_ms_label">Required silence before evaluation (ms)</string>
     <string name="vad_finalize_ms_label">Extra delay before finalizing (ms)</string>
+    <string name="accessibility_required">Enable the Voice Input accessibility service to insert text.</string>
 </resources>
