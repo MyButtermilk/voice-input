@@ -31,6 +31,7 @@ class TextInsertionAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "TISvc"
+        private const val EXTRA_HINT_TEXT_KEY = "android.view.accessibility.extra.HINT_TEXT"
         private const val REASON_SUCCESS = "success"
         private const val DUPLICATE_WINDOW_MS = 1000L
         @Volatile
@@ -543,6 +544,7 @@ class TextInsertionAccessibilityService : AccessibilityService() {
         }
 
         val beforeRaw = (node.text ?: "").toString()
+        val effectiveBefore = sanitizeExistingText(beforeRaw, node)
 
         if (text.isEmpty()) {
 
@@ -550,11 +552,11 @@ class TextInsertionAccessibilityService : AccessibilityService() {
 
         }
 
-        val trimmedBefore = beforeRaw.trim()
+        val trimmedBefore = effectiveBefore.trim()
 
-        val shouldReplace = trimmedBefore.isEmpty() || looksLikePlaceholder(trimmedBefore)
+        val shouldReplace = trimmedBefore.isEmpty()
 
-        if (!shouldReplace && beforeRaw.endsWith(text)) {
+        if (!shouldReplace && effectiveBefore.endsWith(text)) {
 
             return SetTextOutcome.Success
 
@@ -566,7 +568,7 @@ class TextInsertionAccessibilityService : AccessibilityService() {
 
         } else {
 
-            combineText(beforeRaw, text)
+            combineText(effectiveBefore, text)
 
         }
 
@@ -688,48 +690,66 @@ class TextInsertionAccessibilityService : AccessibilityService() {
 
     }
 
-    private fun looksLikePlaceholder(text: CharSequence?): Boolean {
+    private fun sanitizeExistingText(raw: String, node: AccessibilityNodeInfo): String {
+        val trimmedRaw = raw.trim()
+        if (trimmedRaw.isEmpty()) return ""
+        if (looksLikePlaceholder(trimmedRaw)) return ""
+        val hintText = extractHintText(node)
+        val normalizedExisting = normalizePlaceholderForComparison(trimmedRaw)
+        val normalizedHint = normalizePlaceholderForComparison(hintText)
+        if (normalizedExisting != null && normalizedHint != null && normalizedExisting == normalizedHint && cursorLikelyAtStart(node)) {
+            return ""
+        }
+        return raw
+    }
 
-        if (text.isNullOrBlank()) return false
+    private fun extractHintText(node: AccessibilityNodeInfo): CharSequence? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val directHint = node.hintText
+            if (!directHint.isNullOrBlank()) {
+                return directHint
+            }
+        }
+        val extras = node.extras
+        val compatHint = extras?.getCharSequence(EXTRA_HINT_TEXT_KEY)
+        return if (compatHint.isNullOrBlank()) null else compatHint
+    }
 
-        val normalized = text.toString()
+    private fun cursorLikelyAtStart(node: AccessibilityNodeInfo): Boolean {
+        return try {
+            val start = node.textSelectionStart
+            val end = node.textSelectionEnd
+            start <= 0 && end <= 0
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
+    private fun normalizePlaceholderForComparison(text: CharSequence?): String? {
+        if (text.isNullOrBlank()) return null
+        return text.toString()
             .replace("\u00A0", " ")
-
             .replace("\u202F", " ")
-
             .replace(Regex("\\s+"), " ")
-
             .trim()
-
             .trimEnd('.', '\u2026', ':')
-
             .trim()
-
             .lowercase(Locale.ROOT)
+    }
 
+    private fun looksLikePlaceholder(text: CharSequence?): Boolean {
+        val normalized = normalizePlaceholderForComparison(text) ?: return false
         if (normalized.isEmpty()) return false
-
         val placeholders = setOf(
-
             "nachricht",
-
             "nachricht verfassen",
-
             "nachricht schreiben",
-
             "message",
-
             "type a message",
-
             "write a message",
-
             "schreibe eine nachricht"
-
         )
-
         return normalized in placeholders
-
     }
 
 }
