@@ -4,10 +4,13 @@ import android.content.Context
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.os.SystemClock
 import android.text.InputType
 import android.view.View
+import android.util.Log
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.InputMethodSubtype
 import androidx.compose.foundation.layout.Box
@@ -29,6 +32,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -63,10 +69,15 @@ import androidx.savedstate.findViewTreeSavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import org.futo.voiceinput.migration.scheduleModelMigrationJob
 import org.futo.voiceinput.settings.pages.ConditionalUnpaidNoticeInVoiceInputWindow
+import org.futo.voiceinput.accessibility.TextInsertionAccessibilityService
+import org.futo.voiceinput.ui.BeautifulRecordingUI
 import org.futo.voiceinput.theme.UixThemeAuto
 import org.futo.voiceinput.updates.scheduleUpdateCheckingJob
+import java.util.Locale
 
 val SupportsNavbarExtension = Build.VERSION.SDK_INT >= 28
+
+private const val PLACEHOLDER_MAX_CHARS = 128
 
 @Composable
 fun navBarHeight(): Dp = with(LocalDensity.current) {
@@ -160,7 +171,13 @@ fun PreviewRecognizeViewLoadedIME() {
 @Composable
 fun PreviewRecognizeViewNoMicIME() {
     RecognizerInputMethodWindow(switchBack = { }) {
-        RecognizeMicError(openSettings = { })
+        BeautifulRecordingUI(
+            magnitude = 0.0f,
+            state = MagnitudeState.MIC_MAY_BE_BLOCKED,
+            finalText = "",
+            partialText = "",
+            onStop = { }
+        )
     }
 }
 
@@ -197,6 +214,11 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         scheduleModelMigrationJob(applicationContext)
     }
 
+    override fun onEvaluateFullscreenMode(): Boolean {
+        // Never use fullscreen, it can break editor focus/connection
+        return false
+    }
+
     private val recognizer = object : RecognizerView() {
         override val context: Context
             get() = this@VoiceInputMethodService
@@ -214,6 +236,9 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         }
 
         override fun onCancel() {
+            deferredCommitJob?.cancel()
+            deferredCommitJob = null
+            pendingCommitText.value = null
             needsInitialization = true
             reset()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -226,52 +251,82 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         var prevText: CharSequence? = null
         var nextText: CharSequence? = null
         override fun decodingStarted() {
-            this@VoiceInputMethodService.currentInputConnection.also {
-                prevText = it.getTextBeforeCursor(1, 0)
-                nextText = it.getTextAfterCursor(1, 0)
+            lastDirectCommitText = null
+            lastDirectCommitAt = 0L
+            TextInsertionAccessibilityService.clearRecentSuccess()
+            this@VoiceInputMethodService.currentInputConnection?.let { connection ->
+                prevText = connection.getTextBeforeCursor(1, 0)
+                nextText = connection.getTextAfterCursor(1, 0)
+                lastInputConnection = connection
             }
         }
 
         override fun sendResult(result: String) {
-            this@VoiceInputMethodService.currentInputConnection.also {
-                var modifiedResult = result
-
-                // Insert space automatically if ended at punctuation
-                // TODO: Could send text before cursor as whisper prompt
-
-                if(!prevText.isNullOrBlank()) {
-                    val lastChar = prevText?.last()
-
-                    if (punctuationChars.contains(lastChar)) {
-                        modifiedResult = " $result"
-                    }
-                }
-
-                /*
-                if(!nextText.isNullOrBlank()) {
-                    val oldPunctuation = nextText?.first()
-                    val newPunctuation = result.last()
-
-                    if (punctuationChars.contains(oldPunctuation) && punctuationChars.contains(newPunctuation)) {
-                        it.deleteSurroundingText(0, 1)
-                    }
-                }
-                */
-
-                it.commitText(modifiedResult, 1)
-            }
-            onCancel()
-        }
-
-        override fun sendPartialResult(result: String): Boolean {
-            if(this@VoiceInputMethodService.currentInputConnection != null) {
-                this@VoiceInputMethodService.currentInputConnection.setComposingText(result, 1)
-                return true
+            val computedResult = if (result.isNotBlank() && !prevText.isNullOrBlank() && punctuationChars.contains(prevText?.last())) {
+                val trimmed = result.trimStart()
+                if (trimmed.isEmpty()) " " else " " + trimmed
             } else {
-                return false
+                result
             }
+
+            if (computedResult.isBlank()) {
+                switchBackAfterResult()
+                return
+            }
+
+            // Cancel any pending commits
+            pendingCommitText.value = null
+            deferredCommitJob?.cancel()
+
+            // Use ONLY accessibility service
+            val accessibilityActive = TextInsertionAccessibilityService.isActive()
+            if (accessibilityActive) {
+                TextInsertionAccessibilityService.requestInsert(computedResult, delayMs = 50L)
+            } else {
+                android.widget.Toast.makeText(
+                    this@VoiceInputMethodService,
+                    getString(R.string.accessibility_required),
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            switchBackAfterResult()
         }
 
+        private var partialDeferredJob: kotlinx.coroutines.Job? = null
+        private var pendingComposingText: String? = null
+        override fun sendPartialResult(result: String): Boolean {
+            val ic = this@VoiceInputMethodService.currentInputConnection ?: lastInputConnection
+            Log.d("VIIME", "sendPartial: curr=" + (this@VoiceInputMethodService.currentInputConnection!=null) + " last=" + (lastInputConnection!=null) + " len=" + result.length)
+            if (ic != null) {
+                try {
+                    ic.setComposingText(result, 1)
+                    lastInputConnection = ic
+                    Log.d("VIIME", "sendPartial: composing ok")
+                    return true
+                } catch (_: Throwable) { }
+            }
+            pendingComposingText = result
+            partialDeferredJob?.cancel()
+            partialDeferredJob = this@VoiceInputMethodService.lifecycle.coroutineScope.launch {
+                var attempts = 120
+                while (attempts-- > 0) {
+                    requestShowSelf(0)
+                    val text = pendingComposingText
+                    if (text == null) break
+                    val conn = currentInputConnection ?: lastInputConnection
+                    if (conn != null) {
+                        try {
+                            conn.setComposingText(text, 1)
+                            lastInputConnection = conn
+                            Log.d("VIIME", "sendPartial: composing ok (deferred)")
+                            break
+                        } catch (_: Throwable) { }
+                    }
+                    kotlinx.coroutines.delay(50)
+                }
+            }
+            return false
+        }
         override fun requestPermission() {
             // We can't ask for permission from a service
             // TODO: We could launch an activity and request it that way
@@ -333,8 +388,16 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
     }
 
     private var needsInitialization = true
+    private val pendingCommitText: MutableState<String?> = mutableStateOf(null)
+    private var lastInputConnection: InputConnection? = null
+    private var deferredCommitJob: Job? = null
+    private val duplicateCommitWindowMs = 5000L
+    private var lastDirectCommitText: String? = null
+    private var lastDirectCommitAt: Long = 0L
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+
+        currentInputConnection?.let { lastInputConnection = it }
 
         when (info.inputType and InputType.TYPE_MASK_CLASS) {
             InputType.TYPE_CLASS_NUMBER -> {
@@ -366,6 +429,11 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         // TODO: Idle state
     }
 
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        currentInputConnection?.let { lastInputConnection = it }
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
         println("Finish input view")
         recognizer.reset()
@@ -388,4 +456,168 @@ class VoiceInputMethodService : InputMethodService(), LifecycleOwner, ViewModelS
         println("Destroy")
         handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
+    private fun switchBackAfterResult() {
+        deferredCommitJob?.cancel()
+        deferredCommitJob = null
+        pendingCommitText.value = null
+        recognizer.reset()
+        needsInitialization = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            switchToPreviousInputMethod()
+        } else {
+            inputMethodManager.switchToLastInputMethod(window.window!!.attributes.token)
+        }
+    }
+
+    private fun commitToConnection(connection: InputConnection, text: String): Boolean {
+        Log.d("VIIME", "commitToConnection: hasConn=" + (connection!=null) + " len=" + text.length)
+        if (text.isEmpty()) {
+            pendingCommitText.value = null
+            lastInputConnection = connection
+            return true
+        }
+        val committed = connection.commitFinalText(text)
+        Log.d("VIIME", "commitFinalText done committed=" + committed)
+        if (committed) {
+            pendingCommitText.value = null
+            lastInputConnection = connection
+        }
+        return committed
+    }
+
+    private suspend fun waitForConnectionAndCommit(text: String): Boolean {
+        var attempts = 40
+        while (attempts-- > 0) {
+            if (pendingCommitText.value == null) {
+                return true
+            }
+            val connection = currentInputConnection ?: lastInputConnection
+            Log.d("VIIME", "waitForConnection: attempt=" + attempts + " curr=" + (currentInputConnection!=null) + " last=" + (lastInputConnection!=null))
+            if (connection != null && commitToConnection(connection, text)) {
+                return true
+            }
+            delay(50)
+        }
+        return false
+    }
+
+    private fun InputConnection.commitFinalText(text: CharSequence): Boolean {
+        return try {
+            beginBatchEdit()
+            removePlaceholderIfPresent()
+            setComposingText("", 1)
+            commitText(text, 1)
+            finishComposingText()
+            true
+        } catch (t: Throwable) {
+            Log.e("VIIME", "commitFinalText failed", t)
+            false
+        } finally {
+            try {
+                endBatchEdit()
+            } catch (t: Throwable) {
+                Log.w("VIIME", "commitFinalText endBatchEdit failed", t)
+            }
+        }
+    }
+
+
+    private fun InputConnection.removePlaceholderIfPresent(): Boolean {
+        val before = runCatching { getTextBeforeCursor(PLACEHOLDER_MAX_CHARS, 0) }.getOrNull()?.toString()
+        val after = runCatching { getTextAfterCursor(PLACEHOLDER_MAX_CHARS, 0) }.getOrNull()?.toString()
+        val selected = runCatching { getSelectedText(0) }.getOrNull()?.toString()
+
+        fun clear(beforeCount: Int, afterCount: Int): Boolean {
+            val result = runCatching {
+                setComposingText("", 1)
+                deleteSurroundingText(beforeCount.coerceAtLeast(0), afterCount.coerceAtLeast(0))
+            }.getOrElse { false }
+            runCatching { finishComposingText() }
+            return result
+        }
+
+        if (!selected.isNullOrBlank() && looksLikePlaceholder(selected)) {
+            return clear(selected.length, 0)
+        }
+
+        val beforeNonNull = before?.takeIf { it.isNotBlank() }
+        val afterNonNull = after?.takeIf { it.isNotBlank() }
+
+        if (beforeNonNull != null && afterNonNull == null && looksLikePlaceholder(beforeNonNull)) {
+            return clear(beforeNonNull.length, 0)
+        }
+
+        if (afterNonNull != null && beforeNonNull == null && looksLikePlaceholder(afterNonNull)) {
+            return clear(0, afterNonNull.length)
+        }
+
+        val combined = when {
+            beforeNonNull != null && afterNonNull != null -> beforeNonNull + afterNonNull
+            beforeNonNull != null -> beforeNonNull
+            afterNonNull != null -> afterNonNull
+            else -> null
+        }
+
+        if (!combined.isNullOrBlank() && looksLikePlaceholder(combined)) {
+            val beforeCount = beforeNonNull?.length ?: 0
+            val afterCount = afterNonNull?.length ?: 0
+            return clear(beforeCount, afterCount)
+        }
+
+        return false
+    }
+
+
+
+
+    private fun looksLikePlaceholder(text: CharSequence?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val normalized = text.toString()
+            .replace("\u00A0", " ")
+            .replace("\u202F", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimEnd('.', '\u2026', ':')
+            .trim()
+            .lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        val placeholders = setOf(
+            "nachricht",
+            "nachricht verfassen",
+            "nachricht schreiben",
+            "message",
+            "type a message",
+            "write a message",
+            "schreibe eine nachricht"
+        )
+        return normalized in placeholders
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+
+
+
+
+
+
+
+
+
+
+
+

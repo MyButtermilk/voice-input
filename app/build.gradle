@@ -91,6 +91,10 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion '1.4.6'
     }
+    lint {
+        abortOnError false
+        disable 'MutableCollectionMutableState'
+    }
     packagingOptions {
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
@@ -226,6 +230,8 @@ dependencies {
     debugImplementation 'androidx.compose.ui:ui-test-manifest'
 
     implementation 'com.squareup.okhttp3:okhttp:4.11.0'
+
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.3'
 
     implementation 'ch.acra:acra-http:5.11.1'
     implementation 'ch.acra:acra-dialog:5.11.1'

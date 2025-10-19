@@ -134,7 +134,6 @@ val EXT_LICENSE_KEY = SettingsKey(stringPreferencesKey("license_key"), "")
 val EXT_PENDING_PURCHASE_ID = SettingsKey(stringPreferencesKey("purchase_id"), "")
 val EXT_PENDING_PURCHASE_LAST_CHECK = SettingsKey(longPreferencesKey("purchase_status_last_check"), 0)
 
-val IS_VAD_ENABLED = SettingsKey(booleanPreferencesKey("enable_vad"), true)
 val USE_LANGUAGE_SPECIFIC_MODELS = SettingsKey(booleanPreferencesKey("USE_LANGUAGE_SPECIFIC_MODELS"), true)
 
 val ALLOW_UNDERTRAINED_LANGUAGES = SettingsKey(booleanPreferencesKey("allow_undertrained_languages"), false)
@@ -150,3 +149,15 @@ val THEME_KEY = SettingsKey(
 val BEAM_SEARCH = SettingsKey(key = booleanPreferencesKey("use_beam_search"), default = true)
 val MODELS_MIGRATED = SettingsKey(key = booleanPreferencesKey("models_migrated_1"), default = false)
 val DISMISS_MIGRATION_TIP = SettingsKey(key = booleanPreferencesKey("dismiss_migration_tip"), default = false)
+
+// Speech-to-Text provider selection and API keys
+val STT_PROVIDER = SettingsKey(stringPreferencesKey("stt_provider"), "whisper_local")
+val SONIOX_API_KEY = SettingsKey(stringPreferencesKey("soniox_api_key"), "")
+val SONIOX_MODE = SettingsKey(stringPreferencesKey("soniox_mode"), "async")
+val SONIOX_CONTEXT_VOCAB = SettingsKey(stringPreferencesKey("soniox_context_vocab"), "")
+
+// VAD thresholds (milliseconds)
+val VAD_SPEECH_MS = SettingsKey(intPreferencesKey("vad_speech_ms"), 150)
+val VAD_SILENCE_MS = SettingsKey(intPreferencesKey("vad_silence_ms"), 300)
+val VAD_FINALIZE_MS = SettingsKey(intPreferencesKey("vad_finalize_ms"), 2000)
+

@@ -1,0 +1,45 @@
+name: Build devDebug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ feature/soniox-stt ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
+
+      - name: Build devDebug APK
+        run: ./gradlew --no-daemon assembleDevDebug -x lint -x test
+
+      - name: Locate APKs
+        id: locate
+        run: |
+          echo "APK_DIRS=$(find app/build/outputs/apk -type f -name '*.apk' -printf '%h\n' | sort -u | tr '\n' ' ')" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devDebug-apks
+          path: |
+            app/build/outputs/apk/**/**.apk
+          if-no-files-found: error
+

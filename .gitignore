@@ -1,54 +1,74 @@
+# Android Studio generated files
 *.iml
 .gradle
-/local.properties
+.gradle/
+build/
+/build
+/captures
+.externalNativeBuild/
+.externalNativeBuild
+.cxx/
+.cxx
+
+# Local configuration files (contain sensitive paths/keys)
+local.properties
+keystore.properties
+crashreporting.properties
+
+# IDE files
+.idea/
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-# Gradle files
-.gradle/
-build/
-
-# Local configuration file (sdk path, etc)
-local.properties
-
-# Log/OS Files
-*.log
-
-# Android Studio generated files and folders
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-output.json
-
-# IntelliJ
-*.iml
-.idea/
 misc.xml
 deploymentTargetDropDown.xml
 render.experimental.xml
 
-# Keystore files
+# Generated APKs and outputs
+*.apk
+*.aab
+output.json
+app/release/*.apk
+app/release/*.zip
+app/build/outputs/
+
+# Log files
+*.log
+*.hprof
+soniox-realtime.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keystore files (contain signing keys)
 *.jks
 *.keystore
 
-# Google Services (e.g. APIs or Firebase)
+# Google Services (contains API keys)
 google-services.json
 
 # Android Profiling
 *.hprof
 
+# Temporary research/exploration files
+exa-*.js
+exa-js-README.txt
 
-app/release/*.apk
-app/release/*.zip
-keystore.properties
-crashreporting.properties
+# Native build artifacts
+/app/build/intermediates/cxx/
+/app/build/intermediates/merged_native_libs/
+/app/build/intermediates/stripped_native_libs/
+
+# Generated resources and classes
+/app/build/generated/
+/app/build/intermediates/
+/app/build/kotlin/
+/app/build/tmp/
+
+# Development tools and SDKs (should not be committed)
+.tools/
+.claude/

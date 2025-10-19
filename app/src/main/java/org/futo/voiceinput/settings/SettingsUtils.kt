@@ -48,6 +48,7 @@ import org.futo.voiceinput.settings.pages.ModelsScreen
 import org.futo.voiceinput.settings.pages.PaymentFailedScreen
 import org.futo.voiceinput.settings.pages.PaymentScreen
 import org.futo.voiceinput.settings.pages.PaymentThankYouScreen
+import org.futo.voiceinput.settings.pages.SpeechProviderScreen
 import org.futo.voiceinput.settings.pages.TestScreen
 import org.futo.voiceinput.settings.pages.ThemeScreen
 
@@ -147,6 +148,7 @@ fun SettingsMain(
         composable("testing") { TestScreen(settingsUiState.intentResultText, navController) }
         composable("models") { ModelsScreen(settingsViewModel, navController) }
         composable("input") { InputScreen(settingsViewModel, navController) }
+        composable("speech") { SpeechProviderScreen(settingsViewModel, navController) }
         composable("themes") { ThemeScreen(navController) }
 
         composable("credits") {

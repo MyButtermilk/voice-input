@@ -135,6 +135,13 @@ fun HomeScreen(
         )
 
         NavigationItem(
+            title = stringResource(R.string.stt_provider),
+            style = NavigationItemStyle.Misc,
+            navigate = { navController.navigate("speech") },
+            icon = painterResource(R.drawable.edit)
+        )
+
+        NavigationItem(
             title = stringResource(R.string.input_options),
             style = NavigationItemStyle.Misc,
             navigate = { navController.navigate("input") },

@@ -14,10 +14,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -35,6 +35,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.LifecycleCoroutineScope
+import android.util.Log
+import org.futo.voiceinput.accessibility.TextInsertionAccessibilityService
 import androidx.lifecycle.lifecycleScope
 import org.futo.voiceinput.migration.scheduleModelMigrationJob
 import org.futo.voiceinput.settings.pages.ConditionalUnpaidNoticeInVoiceInputWindow
@@ -48,8 +50,8 @@ fun RecognizeWindow(forceNoUnpaidNotice: Boolean = false, allowClick: Boolean = 
         Surface(
             modifier = Modifier
                 .recognizerSurfaceClickable(disabled = !allowClick, onPauseVAD = onPauseVAD, onFinish = onFinish)
-                .width(280.dp)
-                .wrapContentHeight(),
+                .width(320.dp)
+                .fillMaxHeight(0.8f),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp)
         ) {
@@ -169,10 +171,14 @@ class RecognizeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        recognizer.reset()
         recognizer.init()
         scheduleUpdateCheckingJob(applicationContext)
         scheduleModelMigrationJob(applicationContext)
+        window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
@@ -194,6 +200,25 @@ class RecognizeActivity : ComponentActivity() {
     }
 
     private fun sendResult(result: String) {
+        // Always try to use accessibility service for insertion
+        val accessibilityActive = TextInsertionAccessibilityService.isActive()
+        
+        if (accessibilityActive) {
+            TextInsertionAccessibilityService.requestInsert(result, delayMs = 0L) // No delay for Intent mode
+
+            // Suppress Intent result to avoid duplicate insertion by the caller app
+            setResult(RESULT_CANCELED)
+            finish()
+            return
+        } else {
+            // Show a toast to the user
+            android.widget.Toast.makeText(
+                this,
+                "Please enable FUTO Voice Input accessibility service",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+
         val returnIntent = Intent()
 
         val results = listOf(result)

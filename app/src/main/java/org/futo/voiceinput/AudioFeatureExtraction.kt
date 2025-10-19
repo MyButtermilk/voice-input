@@ -201,7 +201,7 @@ class AudioFeatureExtraction(
 
 
     /**
-     * This function converts input audio samples to 1x80x3000 features
+     * This function converts input audio samples to 1x80x800 features
      */
     fun melSpectrogram(y: DoubleArray): FloatArray {
         val paddedWaveform = DoubleArray(min(numSamples, y.size + hopLength).coerceAtLeast(nFFT)) {
@@ -248,10 +248,13 @@ class AudioFeatureExtraction(
             }
         }
 
-        val mel = FloatArray(1 * 80 * 3000)
-        for(i in logSpec.indices) {
-            for(j in logSpec[0].indices) {
-                mel[i * 3000 + j] = logSpec[i][j].toFloat()
+        val frameCount = nbMaxFrames
+        val mel = FloatArray(featureSize * frameCount)
+        val availableFrames = logSpec[0].size
+        for (i in logSpec.indices) {
+            val baseIndex = i * frameCount
+            for (j in 0 until availableFrames) {
+                mel[baseIndex + j] = logSpec[i][j].toFloat()
             }
         }
 
